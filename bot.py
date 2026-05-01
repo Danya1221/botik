@@ -22,6 +22,9 @@ from telegram.ext import (
 CATALOG_LIFETIME_SECONDS = 24 * 60 * 60
 ADMIN_PAGE_SIZE = 12
 
+USE_PREMIUM_BUTTON_EMOJI = True
+DEFAULT_PREMIUM_EMOJI_ID = "5339547060859345402"
+
 ADMIN_PANEL_TEXT = (
     "⚙️ Админ-панель Netizen\n\n"
     "Выберите действие для управления каталогом:"
@@ -32,10 +35,6 @@ CATALOG_TEXT = (
     "Выберите нужную категорию из списка ниже:"
 )
 
-
-# =========================
-# ENV
-# =========================
 
 def get_env(name, default=None):
     value = os.environ.get(name, default)
@@ -54,7 +53,6 @@ def get_database_url():
 
 def get_admin_id():
     admin_id = get_env("ADMIN_ID")
-
     if not admin_id:
         return None
 
@@ -71,10 +69,6 @@ def get_admin_login():
 def get_admin_password():
     return get_env("ADMIN_PASSWORD", "123netizen321")
 
-
-# =========================
-# DATABASE
-# =========================
 
 def db_connect():
     database_url = get_database_url()
@@ -174,10 +168,6 @@ def init_db():
             """)
 
 
-# =========================
-# CATEGORY DB
-# =========================
-
 def get_categories():
     with db_connect() as conn:
         with conn.cursor() as cur:
@@ -233,10 +223,6 @@ def delete_category(category_id):
                 WHERE id = %s;
             """, (category_id,))
 
-
-# =========================
-# MODEL DB
-# =========================
 
 def get_models_by_category(category_id):
     with db_connect() as conn:
@@ -318,10 +304,6 @@ def delete_model(model_id):
                 WHERE id = %s;
             """, (model_id,))
 
-
-# =========================
-# VARIANT DB
-# =========================
 
 def get_variants_by_model(model_id):
     with db_connect() as conn:
@@ -432,10 +414,6 @@ def delete_variant(variant_id):
             """, (variant_id,))
 
 
-# =========================
-# ORDERS / ADMINS
-# =========================
-
 def save_order(user_id, username, full_name, items):
     with db_connect() as conn:
         with conn.cursor() as cur:
@@ -492,16 +470,25 @@ def is_admin_logged(context):
     return context.user_data.get("admin_logged") is True
 
 
-# =========================
-# KEYBOARDS / PAGINATION
-# =========================
-
 reply_menu = ReplyKeyboardMarkup(
     keyboard=[
         ["📦 Каталог"]
     ],
     resize_keyboard=True
 )
+
+
+def pbutton(text, callback_data, emoji_id=DEFAULT_PREMIUM_EMOJI_ID):
+    api_kwargs = {}
+
+    if USE_PREMIUM_BUTTON_EMOJI and emoji_id:
+        api_kwargs["icon_custom_emoji_id"] = emoji_id
+
+    return InlineKeyboardButton(
+        text=text,
+        callback_data=callback_data,
+        api_kwargs=api_kwargs
+    )
 
 
 def make_two_columns(buttons):
@@ -526,14 +513,10 @@ def pagination_buttons(prefix, page, total, page_size=ADMIN_PAGE_SIZE):
     row = []
 
     if page > 0:
-        row.append(
-            InlineKeyboardButton("⬅️ Назад", callback_data=f"{prefix}_{page - 1}")
-        )
+        row.append(pbutton("Назад", f"{prefix}_{page - 1}"))
 
     if page < max_page:
-        row.append(
-            InlineKeyboardButton("Вперёд ➡️", callback_data=f"{prefix}_{page + 1}")
-        )
+        row.append(pbutton("Вперёд", f"{prefix}_{page + 1}"))
 
     if row:
         buttons.append(row)
@@ -545,28 +528,25 @@ def catalog_keyboard():
     categories = get_categories()
 
     buttons = [
-        InlineKeyboardButton(name, callback_data=f"cat_{category_id}")
+        pbutton(name, f"cat_{category_id}")
         for category_id, name in categories
     ]
 
     keyboard = make_two_columns(buttons)
-
-    keyboard.append([
-        InlineKeyboardButton("Открыть корзину", callback_data="cart")
-    ])
+    keyboard.append([pbutton("Открыть корзину", "cart")])
 
     return InlineKeyboardMarkup(keyboard)
 
 
 def admin_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Добавить новую категорию", callback_data="admin_add_category")],
-        [InlineKeyboardButton("➕ Добавить новую модель", callback_data="admin_add_model")],
-        [InlineKeyboardButton("➕ Добавить вариант цвета/памяти", callback_data="admin_add_variant")],
-        [InlineKeyboardButton("🧩 Редактор категорий", callback_data="admin_edit_categories")],
-        [InlineKeyboardButton("📱 Редактор моделей", callback_data="admin_edit_models")],
-        [InlineKeyboardButton("🎨 Редактор вариантов", callback_data="admin_catalog")],
-        [InlineKeyboardButton("🚪 Выйти из админ-панели", callback_data="admin_logout")],
+        [pbutton("Добавить новую категорию", "admin_add_category")],
+        [pbutton("Добавить новую модель", "admin_add_model")],
+        [pbutton("Добавить вариант цвета/памяти", "admin_add_variant")],
+        [pbutton("Редактор категорий", "admin_edit_categories")],
+        [pbutton("Редактор моделей", "admin_edit_models")],
+        [pbutton("Редактор вариантов", "admin_catalog")],
+        [pbutton("Выйти из админ-панели", "admin_logout")],
     ])
 
 
@@ -577,15 +557,10 @@ def admin_choose_category_for_model_keyboard(page=0):
     keyboard = []
 
     for category_id, name in page_items:
-        keyboard.append([
-            InlineKeyboardButton(name, callback_data=f"admin_model_cat_{category_id}")
-        ])
+        keyboard.append([pbutton(name, f"admin_model_cat_{category_id}")])
 
     keyboard += pagination_buttons("admin_add_model_page", page, total)
-
-    keyboard.append([
-        InlineKeyboardButton("Назад в админ-панель", callback_data="admin_menu")
-    ])
+    keyboard.append([pbutton("Назад в админ-панель", "admin_menu")])
 
     return InlineKeyboardMarkup(keyboard)
 
@@ -598,17 +573,11 @@ def admin_choose_model_for_variant_keyboard(page=0):
 
     for model_id, model_name, description, category_name in page_items:
         keyboard.append([
-            InlineKeyboardButton(
-                f"{category_name} → {model_name}",
-                callback_data=f"admin_variant_model_{model_id}"
-            )
+            pbutton(f"{category_name} → {model_name}", f"admin_variant_model_{model_id}")
         ])
 
     keyboard += pagination_buttons("admin_add_variant_page", page, total)
-
-    keyboard.append([
-        InlineKeyboardButton("Назад в админ-панель", callback_data="admin_menu")
-    ])
+    keyboard.append([pbutton("Назад в админ-панель", "admin_menu")])
 
     return InlineKeyboardMarkup(keyboard)
 
@@ -620,15 +589,10 @@ def admin_edit_categories_keyboard(page=0):
     keyboard = []
 
     for category_id, name in page_items:
-        keyboard.append([
-            InlineKeyboardButton(name, callback_data=f"admin_edit_category_{category_id}")
-        ])
+        keyboard.append([pbutton(name, f"admin_edit_category_{category_id}")])
 
     keyboard += pagination_buttons("admin_edit_categories_page", page, total)
-
-    keyboard.append([
-        InlineKeyboardButton("Назад в админ-панель", callback_data="admin_menu")
-    ])
+    keyboard.append([pbutton("Назад в админ-панель", "admin_menu")])
 
     return InlineKeyboardMarkup(keyboard)
 
@@ -641,17 +605,11 @@ def admin_edit_models_keyboard(page=0):
 
     for model_id, model_name, description, category_name in page_items:
         keyboard.append([
-            InlineKeyboardButton(
-                f"{category_name} → {model_name}",
-                callback_data=f"admin_edit_model_{model_id}"
-            )
+            pbutton(f"{category_name} → {model_name}", f"admin_edit_model_{model_id}")
         ])
 
     keyboard += pagination_buttons("admin_edit_models_page", page, total)
-
-    keyboard.append([
-        InlineKeyboardButton("Назад в админ-панель", callback_data="admin_menu")
-    ])
+    keyboard.append([pbutton("Назад в админ-панель", "admin_menu")])
 
     return InlineKeyboardMarkup(keyboard)
 
@@ -664,24 +622,17 @@ def admin_edit_variants_keyboard(page=0):
 
     for variant_id, category_name, model_name, color, memory, price in page_items:
         keyboard.append([
-            InlineKeyboardButton(
+            pbutton(
                 f"{model_name} / {color} / {memory} — {price}",
-                callback_data=f"admin_edit_variant_{variant_id}"
+                f"admin_edit_variant_{variant_id}"
             )
         ])
 
     keyboard += pagination_buttons("admin_catalog_page", page, total)
-
-    keyboard.append([
-        InlineKeyboardButton("Назад в админ-панель", callback_data="admin_menu")
-    ])
+    keyboard.append([pbutton("Назад в админ-панель", "admin_menu")])
 
     return InlineKeyboardMarkup(keyboard)
 
-
-# =========================
-# JOBS
-# =========================
 
 async def delete_catalog_job(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data
@@ -693,10 +644,6 @@ async def delete_catalog_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-
-# =========================
-# START / ADMIN
-# =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -750,10 +697,6 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔐 Вход в админ-панель Netizen\n\nВведите логин:"
     )
 
-
-# =========================
-# TEXT HANDLER
-# =========================
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -1073,7 +1016,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         variant_id = context.user_data.get("edit_variant_id")
-
         update_variant_price(variant_id, text)
 
         context.user_data["admin_state"] = None
@@ -1098,10 +1040,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# =========================
-# CALLBACK HANDLER
-# =========================
-
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1113,9 +1051,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         categories = get_categories()
 
         if not categories:
-            await query.edit_message_text(
-                "Каталог Netizen\n\nКаталог пока пустой."
-            )
+            await query.edit_message_text("Каталог Netizen\n\nКаталог пока пустой.")
             return
 
         await query.edit_message_text(
@@ -1137,30 +1073,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         models = get_models_by_category(category_id)
 
         buttons = [
-            InlineKeyboardButton(name, callback_data=f"model_{model_id}")
+            pbutton(name, f"model_{model_id}")
             for model_id, name, description in models
         ]
 
         keyboard = make_two_columns(buttons)
-
-        keyboard.append([
-            InlineKeyboardButton("Назад в каталог", callback_data="catalog")
-        ])
-
-        keyboard.append([
-            InlineKeyboardButton("Открыть корзину", callback_data="cart")
-        ])
+        keyboard.append([pbutton("Назад в каталог", "catalog")])
+        keyboard.append([pbutton("Открыть корзину", "cart")])
 
         if not models:
-            text_msg = (
-                f"Категория: {category[1]}\n\n"
-                "Моделей пока нет."
-            )
+            text_msg = f"Категория: {category[1]}\n\nМоделей пока нет."
         else:
-            text_msg = (
-                f"Категория: {category[1]}\n\n"
-                "Выберите модель из списка ниже:"
-            )
+            text_msg = f"Категория: {category[1]}\n\nВыберите модель из списка ниже:"
 
         await query.edit_message_text(
             text=text_msg,
@@ -1182,31 +1106,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         variants = get_variants_by_model(model_id)
 
         buttons = [
-            InlineKeyboardButton(
-                f"{color} / {memory}",
-                callback_data=f"variant_{variant_id}"
-            )
+            pbutton(f"{color} / {memory}", f"variant_{variant_id}")
             for variant_id, color, memory, price in variants
         ]
 
         keyboard = make_two_columns(buttons)
+        keyboard.append([pbutton("Назад к моделям", f"cat_{category_id}")])
+        keyboard.append([pbutton("Открыть корзину", "cart")])
+        keyboard.append([pbutton("Вернуться в каталог", "catalog")])
 
-        keyboard.append([
-            InlineKeyboardButton("Назад к моделям", callback_data=f"cat_{category_id}")
-        ])
-
-        keyboard.append([
-            InlineKeyboardButton("Открыть корзину", callback_data="cart")
-        ])
-
-        keyboard.append([
-            InlineKeyboardButton("Вернуться в каталог", callback_data="catalog")
-        ])
-
-        text_msg = (
-            f"{model_name}\n\n"
-            f"Категория: {category_name}\n"
-        )
+        text_msg = f"{model_name}\n\nКатегория: {category_name}\n"
 
         if description:
             text_msg += f"\nОписание:\n{description}\n"
@@ -1253,10 +1162,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         keyboard = [
-            [InlineKeyboardButton("Добавить в корзину", callback_data=f"add_{variant_id}")],
-            [InlineKeyboardButton("Назад к вариантам", callback_data=f"model_{model_id}")],
-            [InlineKeyboardButton("Открыть корзину", callback_data="cart")],
-            [InlineKeyboardButton("Вернуться в каталог", callback_data="catalog")],
+            [pbutton("Добавить в корзину", f"add_{variant_id}")],
+            [pbutton("Назад к вариантам", f"model_{model_id}")],
+            [pbutton("Открыть корзину", "cart")],
+            [pbutton("Вернуться в каталог", "catalog")],
         ]
 
         await query.edit_message_text(
@@ -1294,21 +1203,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Можно перейти в корзину или вернуться в каталог."
             ),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Перейти в корзину", callback_data="cart")],
-                [InlineKeyboardButton("Назад к вариантам", callback_data=f"model_{model_id}")],
-                [InlineKeyboardButton("Вернуться в каталог", callback_data="catalog")],
+                [pbutton("Перейти в корзину", "cart")],
+                [pbutton("Назад к вариантам", f"model_{model_id}")],
+                [pbutton("Вернуться в каталог", "catalog")],
             ])
         )
 
     elif data == "cart":
         if not cart:
             await query.edit_message_text(
-                text=(
-                    "Корзина Netizen\n\n"
-                    "Корзина пока пустая."
-                ),
+                text="Корзина Netizen\n\nКорзина пока пустая.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Вернуться в каталог", callback_data="catalog")]
+                    [pbutton("Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -1330,9 +1236,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     category_name
                 ) = variant
 
-                lines.append(
-                    f"{index}. {model_name} / {color} / {memory} — {price}"
-                )
+                lines.append(f"{index}. {model_name} / {color} / {memory} — {price}")
                 total_count += 1
 
         text_msg = (
@@ -1344,9 +1248,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             text=text_msg,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Оформить заказ", callback_data="checkout")],
-                [InlineKeyboardButton("Очистить корзину", callback_data="clear_cart")],
-                [InlineKeyboardButton("Вернуться в каталог", callback_data="catalog")],
+                [pbutton("Оформить заказ", "checkout")],
+                [pbutton("Очистить корзину", "clear_cart")],
+                [pbutton("Вернуться в каталог", "catalog")],
             ])
         )
 
@@ -1359,15 +1263,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Вы можете вернуться в каталог и выбрать новые товары."
             ),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Вернуться в каталог", callback_data="catalog")]
+                [pbutton("Вернуться в каталог", "catalog")]
             ])
         )
 
     elif data == "checkout":
         if not cart:
-            await query.edit_message_text(
-                "Корзина пустая. Сначала добавьте товар."
-            )
+            await query.edit_message_text("Корзина пустая. Сначала добавьте товар.")
             return
 
         main_admin_id = get_admin_id()
@@ -1397,9 +1299,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     category_name
                 ) = variant
 
-                lines.append(
-                    f"{index}. {model_name} / {color} / {memory} — {price}"
-                )
+                lines.append(f"{index}. {model_name} / {color} / {memory} — {price}")
 
         items_text = "\n".join(lines)
 
@@ -1427,7 +1327,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Менеджер скоро свяжется с вами."
             ),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Вернуться в каталог", callback_data="catalog")]
+                [pbutton("Вернуться в каталог", "catalog")]
             ])
         )
 
@@ -1437,10 +1337,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         context.user_data["admin_state"] = "add_category_name"
-
-        await query.edit_message_text(
-            "➕ Добавление категории\n\nВведите название новой категории:"
-        )
+        await query.edit_message_text("➕ Добавление категории\n\nВведите название новой категории:")
 
     elif data == "admin_add_model":
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1451,19 +1348,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not categories:
             await query.edit_message_text(
-                text=(
-                    "Категорий пока нет.\n\n"
-                    "Сначала добавьте хотя бы одну категорию."
-                ),
+                text="Категорий пока нет.\n\nСначала добавьте хотя бы одну категорию.",
                 reply_markup=admin_keyboard()
             )
             return
 
         await query.edit_message_text(
-            text=(
-                "➕ Добавление модели\n\n"
-                "Выберите категорию для новой модели:"
-            ),
+            text="➕ Добавление модели\n\nВыберите категорию для новой модели:",
             reply_markup=admin_choose_category_for_model_keyboard(page=0)
         )
 
@@ -1475,10 +1366,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = int(data.replace("admin_add_model_page_", ""))
 
         await query.edit_message_text(
-            text=(
-                "➕ Добавление модели\n\n"
-                "Выберите категорию для новой модели:"
-            ),
+            text="➕ Добавление модели\n\nВыберите категорию для новой модели:",
             reply_markup=admin_choose_category_for_model_keyboard(page=page)
         )
 
@@ -1492,9 +1380,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["new_model_category_id"] = category_id
         context.user_data["admin_state"] = "add_model_name"
 
-        await query.edit_message_text(
-            "Введите название модели.\n\nНапример: iPhone 17 Pro"
-        )
+        await query.edit_message_text("Введите название модели.\n\nНапример: iPhone 17 Pro")
 
     elif data == "admin_add_variant":
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1505,10 +1391,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not models:
             await query.edit_message_text(
-                text=(
-                    "Моделей пока нет.\n\n"
-                    "Сначала добавьте хотя бы одну модель."
-                ),
+                text="Моделей пока нет.\n\nСначала добавьте хотя бы одну модель.",
                 reply_markup=admin_keyboard()
             )
             return
@@ -1546,9 +1429,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["new_variant_model_id"] = model_id
         context.user_data["admin_state"] = "add_variant_color"
 
-        await query.edit_message_text(
-            "Введите цвет.\n\nНапример: Black, White, Blue, Natural Titanium"
-        )
+        await query.edit_message_text("Введите цвет.\n\nНапример: Black, White, Blue, Natural Titanium")
 
     elif data == "admin_edit_categories":
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1559,16 +1440,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not categories:
             await query.edit_message_text(
-                text="🧩 Редактор категорий\n\nКатегорий пока нет.",
+                text="Редактор категорий\n\nКатегорий пока нет.",
                 reply_markup=admin_keyboard()
             )
             return
 
         await query.edit_message_text(
-            text=(
-                "🧩 Редактор категорий Netizen\n\n"
-                "Выберите категорию для редактирования:"
-            ),
+            text="Редактор категорий Netizen\n\nВыберите категорию для редактирования:",
             reply_markup=admin_edit_categories_keyboard(page=0)
         )
 
@@ -1580,10 +1458,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = int(data.replace("admin_edit_categories_page_", ""))
 
         await query.edit_message_text(
-            text=(
-                "🧩 Редактор категорий Netizen\n\n"
-                "Выберите категорию для редактирования:"
-            ),
+            text="Редактор категорий Netizen\n\nВыберите категорию для редактирования:",
             reply_markup=admin_edit_categories_keyboard(page=page)
         )
 
@@ -1608,9 +1483,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Выберите действие:"
             ),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Переименовать категорию", callback_data=f"admin_rename_category_{category_id}")],
-                [InlineKeyboardButton("Удалить категорию", callback_data=f"admin_delete_category_{category_id}")],
-                [InlineKeyboardButton("Назад к категориям", callback_data="admin_edit_categories")],
+                [pbutton("Переименовать категорию", f"admin_rename_category_{category_id}")],
+                [pbutton("Удалить категорию", f"admin_delete_category_{category_id}")],
+                [pbutton("Назад к категориям", "admin_edit_categories")],
             ])
         )
 
@@ -1623,9 +1498,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_category_id"] = category_id
         context.user_data["admin_state"] = "rename_category"
 
-        await query.edit_message_text(
-            "Введите новое название категории:"
-        )
+        await query.edit_message_text("Введите новое название категории:")
 
     elif data.startswith("admin_delete_category_"):
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1636,10 +1509,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         delete_category(category_id)
 
         await query.edit_message_text(
-            text=(
-                "Категория удалена ✅\n\n"
-                "Она больше не отображается в каталоге."
-            ),
+            text="Категория удалена ✅\n\nОна больше не отображается в каталоге.",
             reply_markup=admin_keyboard()
         )
 
@@ -1652,16 +1522,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not models:
             await query.edit_message_text(
-                text="📱 Редактор моделей\n\nМоделей пока нет.",
+                text="Редактор моделей\n\nМоделей пока нет.",
                 reply_markup=admin_keyboard()
             )
             return
 
         await query.edit_message_text(
-            text=(
-                "📱 Редактор моделей Netizen\n\n"
-                "Выберите модель для редактирования:"
-            ),
+            text="Редактор моделей Netizen\n\nВыберите модель для редактирования:",
             reply_markup=admin_edit_models_keyboard(page=0)
         )
 
@@ -1673,10 +1540,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = int(data.replace("admin_edit_models_page_", ""))
 
         await query.edit_message_text(
-            text=(
-                "📱 Редактор моделей Netizen\n\n"
-                "Выберите модель для редактирования:"
-            ),
+            text="Редактор моделей Netizen\n\nВыберите модель для редактирования:",
             reply_markup=admin_edit_models_keyboard(page=page)
         )
 
@@ -1708,10 +1572,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             text=text_msg,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Переименовать модель", callback_data=f"admin_rename_model_{model_id}")],
-                [InlineKeyboardButton("Изменить описание", callback_data=f"admin_model_desc_{model_id}")],
-                [InlineKeyboardButton("Удалить модель", callback_data=f"admin_delete_model_{model_id}")],
-                [InlineKeyboardButton("Назад к моделям", callback_data="admin_edit_models")],
+                [pbutton("Переименовать модель", f"admin_rename_model_{model_id}")],
+                [pbutton("Изменить описание", f"admin_model_desc_{model_id}")],
+                [pbutton("Удалить модель", f"admin_delete_model_{model_id}")],
+                [pbutton("Назад к моделям", "admin_edit_models")],
             ])
         )
 
@@ -1724,9 +1588,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_model_id"] = model_id
         context.user_data["admin_state"] = "rename_model"
 
-        await query.edit_message_text(
-            "Введите новое название модели:"
-        )
+        await query.edit_message_text("Введите новое название модели:")
 
     elif data.startswith("admin_model_desc_"):
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1738,10 +1600,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["admin_state"] = "edit_model_description"
 
         await query.edit_message_text(
-            (
-                "Введите новое описание модели.\n\n"
-                "Если описание нужно очистить, отправьте -"
-            )
+            "Введите новое описание модели.\n\nЕсли описание нужно очистить, отправьте -"
         )
 
     elif data.startswith("admin_delete_model_"):
@@ -1753,10 +1612,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         delete_model(model_id)
 
         await query.edit_message_text(
-            text=(
-                "Модель удалена ✅\n\n"
-                "Она больше не отображается в каталоге."
-            ),
+            text="Модель удалена ✅\n\nОна больше не отображается в каталоге.",
             reply_markup=admin_keyboard()
         )
 
@@ -1769,19 +1625,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not variants:
             await query.edit_message_text(
-                text=(
-                    "🎨 Редактор вариантов Netizen\n\n"
-                    "Вариантов пока нет."
-                ),
+                text="Редактор вариантов Netizen\n\nВариантов пока нет.",
                 reply_markup=admin_keyboard()
             )
             return
 
         await query.edit_message_text(
-            text=(
-                "🎨 Редактор вариантов Netizen\n\n"
-                "Выберите вариант для редактирования:"
-            ),
+            text="Редактор вариантов Netizen\n\nВыберите вариант для редактирования:",
             reply_markup=admin_edit_variants_keyboard(page=0)
         )
 
@@ -1793,10 +1643,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = int(data.replace("admin_catalog_page_", ""))
 
         await query.edit_message_text(
-            text=(
-                "🎨 Редактор вариантов Netizen\n\n"
-                "Выберите вариант для редактирования:"
-            ),
+            text="Редактор вариантов Netizen\n\nВыберите вариант для редактирования:",
             reply_markup=admin_edit_variants_keyboard(page=page)
         )
 
@@ -1838,11 +1685,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             text=text_msg,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Изменить цвет", callback_data=f"admin_variant_color_{variant_id}")],
-                [InlineKeyboardButton("Изменить память", callback_data=f"admin_variant_memory_{variant_id}")],
-                [InlineKeyboardButton("Изменить цену", callback_data=f"admin_variant_price_{variant_id}")],
-                [InlineKeyboardButton("Удалить вариант", callback_data=f"admin_variant_delete_{variant_id}")],
-                [InlineKeyboardButton("Назад к вариантам", callback_data="admin_catalog")],
+                [pbutton("Изменить цвет", f"admin_variant_color_{variant_id}")],
+                [pbutton("Изменить память", f"admin_variant_memory_{variant_id}")],
+                [pbutton("Изменить цену", f"admin_variant_price_{variant_id}")],
+                [pbutton("Удалить вариант", f"admin_variant_delete_{variant_id}")],
+                [pbutton("Назад к вариантам", "admin_catalog")],
             ])
         )
 
@@ -1855,9 +1702,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_variant_id"] = variant_id
         context.user_data["admin_state"] = "change_variant_color"
 
-        await query.edit_message_text(
-            "Введите новый цвет варианта:"
-        )
+        await query.edit_message_text("Введите новый цвет варианта:")
 
     elif data.startswith("admin_variant_memory_"):
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1868,9 +1713,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_variant_id"] = variant_id
         context.user_data["admin_state"] = "change_variant_memory"
 
-        await query.edit_message_text(
-            "Введите новое значение памяти:"
-        )
+        await query.edit_message_text("Введите новое значение памяти:")
 
     elif data.startswith("admin_variant_price_"):
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1881,9 +1724,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_variant_id"] = variant_id
         context.user_data["admin_state"] = "change_variant_price"
 
-        await query.edit_message_text(
-            "Введите новую цену варианта:"
-        )
+        await query.edit_message_text("Введите новую цену варианта:")
 
     elif data.startswith("admin_variant_delete_"):
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1894,10 +1735,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         delete_variant(variant_id)
 
         await query.edit_message_text(
-            text=(
-                "Вариант удалён ✅\n\n"
-                "Он больше не будет отображаться в каталоге."
-            ),
+            text="Вариант удалён ✅\n\nОн больше не будет отображаться в каталоге.",
             reply_markup=admin_keyboard()
         )
 
@@ -1915,14 +1753,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["admin_logged"] = False
         context.user_data["admin_state"] = None
 
-        await query.edit_message_text(
-            "Вы вышли из админ-панели."
-        )
+        await query.edit_message_text("Вы вышли из админ-панели.")
 
-
-# =========================
-# MAIN
-# =========================
 
 def main():
     token = get_token()
@@ -1931,6 +1763,7 @@ def main():
     print("BOT_TOKEN найден:", bool(token))
     print("DATABASE_URL найден:", bool(get_database_url()))
     print("ADMIN_ID найден:", bool(get_admin_id()))
+    print("Premium emoji buttons:", USE_PREMIUM_BUTTON_EMOJI)
 
     if not token:
         print("Ошибка: BOT_TOKEN не найден.")
