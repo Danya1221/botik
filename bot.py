@@ -1,18 +1,33 @@
 import os
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
+
+
+CATALOG_LIFETIME_SECONDS = 24 * 60 * 60
 
 
 def get_token():
-    token = os.environ.get("8764879626:AAFblZOgO1GWINprG1Zp1kj5AvyiboejkuQ")
+    token = os.environ.get("BOT_TOKEN")
     if token:
         token = token.strip()
     return token
 
 
 def get_admin_id():
-    admin_id = os.environ.get("707131428")
+    admin_id = os.environ.get("ADMIN_ID")
     if admin_id:
         admin_id = admin_id.strip()
 
@@ -23,6 +38,14 @@ def get_admin_id():
         return int(admin_id)
     except ValueError:
         return None
+
+
+reply_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        ["📦 Каталог"]
+    ],
+    resize_keyboard=True
+)
 
 
 PRODUCTS = {
@@ -48,32 +71,11 @@ PRODUCTS = {
         ),
         "back": "category_iphone",
     },
-    "iphone_14_pro": {
-        "name": "iPhone 14 Pro",
-        "text": (
-            "iPhone 14 Pro\n\n"
-            "Память: 128GB / 256GB / 512GB\n"
-            "Цвета: Space Black / Silver / Gold / Deep Purple\n"
-            "Цена: уточняйте у менеджера.\n\n"
-            "Нажми кнопку ниже, чтобы добавить товар в корзину."
-        ),
-        "back": "category_iphone",
-    },
     "samsung_s24_ultra": {
         "name": "Samsung S24 Ultra",
         "text": (
             "Samsung S24 Ultra\n\n"
             "Память: 256GB / 512GB\n"
-            "Цена: уточняйте у менеджера.\n\n"
-            "Нажми кнопку ниже, чтобы добавить товар в корзину."
-        ),
-        "back": "category_samsung",
-    },
-    "samsung_s23": {
-        "name": "Samsung S23",
-        "text": (
-            "Samsung S23\n\n"
-            "Память: 128GB / 256GB\n"
             "Цена: уточняйте у менеджера.\n\n"
             "Нажми кнопку ниже, чтобы добавить товар в корзину."
         ),
@@ -89,24 +91,7 @@ PRODUCTS = {
         ),
         "back": "category_xiaomi",
     },
-    "redmi_note_13": {
-        "name": "Redmi Note 13",
-        "text": (
-            "Redmi Note 13\n\n"
-            "Память: 128GB / 256GB\n"
-            "Цена: уточняйте у менеджера.\n\n"
-            "Нажми кнопку ниже, чтобы добавить товар в корзину."
-        ),
-        "back": "category_xiaomi",
-    },
 }
-
-
-def main_menu_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📦 Каталог", callback_data="catalog")],
-        [InlineKeyboardButton("🛒 Корзина", callback_data="cart")],
-    ])
 
 
 def catalog_keyboard():
@@ -118,11 +103,90 @@ def catalog_keyboard():
     ])
 
 
+def category_iphone_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("iPhone 15 Pro", callback_data="product_iphone_15_pro")],
+        [InlineKeyboardButton("iPhone 15", callback_data="product_iphone_15")],
+        [InlineKeyboardButton("⬅️ Назад в каталог", callback_data="catalog")],
+        [InlineKeyboardButton("🛒 Корзина", callback_data="cart")],
+    ])
+
+
+def category_samsung_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Samsung S24 Ultra", callback_data="product_samsung_s24_ultra")],
+        [InlineKeyboardButton("⬅️ Назад в каталог", callback_data="catalog")],
+        [InlineKeyboardButton("🛒 Корзина", callback_data="cart")],
+    ])
+
+
+def category_xiaomi_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Xiaomi 14", callback_data="product_xiaomi_14")],
+        [InlineKeyboardButton("⬅️ Назад в каталог", callback_data="catalog")],
+        [InlineKeyboardButton("🛒 Корзина", callback_data="cart")],
+    ])
+
+
+async def delete_catalog_job(context: ContextTypes.DEFAULT_TYPE):
+    job_data = context.job.data
+    chat_id = job_data["chat_id"]
+    message_id = job_data["message_id"]
+
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+    catalog_messages = context.bot_data.setdefault("catalog_messages", [])
+    context.bot_data["catalog_messages"] = [
+        item for item in catalog_messages
+        if not (item["chat_id"] == chat_id and item["message_id"] == message_id)
+    ]
+
+
+async def send_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = await update.message.reply_text(
+        "Каталог товаров:\n\nВыбери категорию:",
+        reply_markup=catalog_keyboard()
+    )
+
+    catalog_messages = context.bot_data.setdefault("catalog_messages", [])
+    catalog_messages.append({
+        "chat_id": message.chat_id,
+        "message_id": message.message_id,
+    })
+
+    context.job_queue.run_once(
+        delete_catalog_job,
+        when=CATALOG_LIFETIME_SECONDS,
+        data={
+            "chat_id": message.chat_id,
+            "message_id": message.message_id,
+        },
+        name=f"delete_catalog_{message.chat_id}_{message.message_id}"
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Добро пожаловать 👋\n\nНажми кнопку ниже, чтобы открыть каталог.",
-        reply_markup=main_menu_keyboard()
+        "Привет! Добро пожаловать 👋\n\n"
+        "Внизу всегда будет кнопка каталога.\n"
+        "Нажми 📦 Каталог, чтобы посмотреть товары.",
+        reply_markup=reply_menu
     )
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    if text == "📦 Каталог":
+        await send_catalog(update, context)
+    else:
+        await update.message.reply_text(
+            "Нажми кнопку 📦 Каталог внизу.",
+            reply_markup=reply_menu
+        )
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,43 +203,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "category_iphone":
-        keyboard = [
-            [InlineKeyboardButton("iPhone 15 Pro", callback_data="product_iphone_15_pro")],
-            [InlineKeyboardButton("iPhone 15", callback_data="product_iphone_15")],
-            [InlineKeyboardButton("iPhone 14 Pro", callback_data="product_iphone_14_pro")],
-            [InlineKeyboardButton("⬅️ Назад в каталог", callback_data="catalog")],
-            [InlineKeyboardButton("🛒 Корзина", callback_data="cart")],
-        ]
-
         await query.edit_message_text(
             text="Каталог iPhone:\n\nВыбери модель:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=category_iphone_keyboard()
         )
 
     elif data == "category_samsung":
-        keyboard = [
-            [InlineKeyboardButton("Samsung S24 Ultra", callback_data="product_samsung_s24_ultra")],
-            [InlineKeyboardButton("Samsung S23", callback_data="product_samsung_s23")],
-            [InlineKeyboardButton("⬅️ Назад в каталог", callback_data="catalog")],
-            [InlineKeyboardButton("🛒 Корзина", callback_data="cart")],
-        ]
-
         await query.edit_message_text(
             text="Каталог Samsung:\n\nВыбери модель:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=category_samsung_keyboard()
         )
 
     elif data == "category_xiaomi":
-        keyboard = [
-            [InlineKeyboardButton("Xiaomi 14", callback_data="product_xiaomi_14")],
-            [InlineKeyboardButton("Redmi Note 13", callback_data="product_redmi_note_13")],
-            [InlineKeyboardButton("⬅️ Назад в каталог", callback_data="catalog")],
-            [InlineKeyboardButton("🛒 Корзина", callback_data="cart")],
-        ]
-
         await query.edit_message_text(
             text="Каталог Xiaomi:\n\nВыбери модель:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=category_xiaomi_keyboard()
         )
 
     elif data.startswith("product_"):
@@ -248,24 +290,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "clear_cart":
         cart.clear()
 
-        keyboard = [
-            [InlineKeyboardButton("📦 В каталог", callback_data="catalog")],
-        ]
-
         await query.edit_message_text(
             text="Корзина очищена ✅",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📦 В каталог", callback_data="catalog")]
+            ])
         )
 
     elif data == "checkout":
         if not cart:
-            keyboard = [
-                [InlineKeyboardButton("📦 В каталог", callback_data="catalog")],
-            ]
-
             await query.edit_message_text(
                 text="Корзина пустая. Сначала добавь товар 🛒",
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📦 В каталог", callback_data="catalog")]
+                ])
             )
             return
 
@@ -273,16 +311,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not admin_id:
             await query.edit_message_text(
-                text=(
-                    "Ошибка: ADMIN_ID не настроен.\n\n"
-                    "Добавь ADMIN_ID в Railway Variables."
-                ),
-                reply_markup=main_menu_keyboard()
+                text="Ошибка: ADMIN_ID не настроен в Railway Variables."
             )
             return
 
         user = query.from_user
-
         username = f"@{user.username}" if user.username else "username не указан"
         full_name = user.full_name
         user_id = user.id
@@ -304,14 +337,41 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         cart.clear()
 
-        keyboard = [
-            [InlineKeyboardButton("📦 В каталог", callback_data="catalog")],
-        ]
-
         await query.edit_message_text(
             text="Заказ оформлен ✅\nМенеджер скоро свяжется с тобой.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📦 В каталог", callback_data="catalog")]
+            ])
         )
+
+
+async def prices_updated(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_id = get_admin_id()
+
+    if update.effective_user.id != admin_id:
+        await update.message.reply_text("У тебя нет доступа к этой команде.")
+        return
+
+    catalog_messages = context.bot_data.setdefault("catalog_messages", [])
+
+    deleted_count = 0
+
+    for item in catalog_messages:
+        try:
+            await context.bot.delete_message(
+                chat_id=item["chat_id"],
+                message_id=item["message_id"]
+            )
+            deleted_count += 1
+        except Exception:
+            pass
+
+    context.bot_data["catalog_messages"] = []
+
+    await update.message.reply_text(
+        f"Старые каталоги удалены ✅\nУдалено сообщений: {deleted_count}",
+        reply_markup=reply_menu
+    )
 
 
 def main():
@@ -321,14 +381,15 @@ def main():
     print("BOT_TOKEN найден:", bool(token))
 
     if not token:
-        print("Ошибка: Railway не передал BOT_TOKEN в приложение.")
-        print("Проверь Railway → worker → Variables.")
+        print("Ошибка: Railway не передал BOT_TOKEN.")
         return
 
     app = ApplicationBuilder().token(token).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("prices_updated", prices_updated))
     app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("Бот запущен...")
     app.run_polling()
