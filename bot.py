@@ -269,10 +269,15 @@ async def delete_catalog_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Добро пожаловать 👋\n\n"
-        "Внизу есть кнопка 📦 Каталог.\n"
-        "Нажми её, чтобы посмотреть товары.",
-        reply_markup=reply_menu
+        (
+            'Добро пожаловать в Netizen! '
+            '<tg-emoji emoji-id="5339547060859345402">☺</tg-emoji>\n\n'
+            'Мы знаем, как найти то, что вам нужно. '
+            'От мощных игровых станций до компактных смартфонов — '
+            'поможем разобраться в мире гаджетов без лишнего шума.'
+        ),
+        reply_markup=reply_menu,
+        parse_mode="HTML"
     )
 
 
