@@ -2,7 +2,6 @@ import os
 from datetime import datetime
 
 import psycopg
-
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -55,10 +54,8 @@ def get_database_url():
 
 def get_admin_id():
     admin_id = get_env("ADMIN_ID")
-
     if not admin_id:
         return None
-
     try:
         return int(admin_id)
     except ValueError:
@@ -74,7 +71,7 @@ def get_admin_password():
 
 
 # =========================
-# CUSTOM EMOJI
+# PREMIUM EMOJI HELPERS
 # =========================
 
 def utf16_len(text):
@@ -98,25 +95,25 @@ def remove_utf16_range(text, offset, length):
 
 
 def extract_text_and_custom_emoji(message):
-    text = message.text or ""
+    text = message.text or message.caption or ""
     emoji_id = None
     cleaned_text = text
+    entities = message.entities or message.caption_entities or []
 
-    if message.entities:
-        custom_entities = [
-            entity for entity in message.entities
-            if entity.type == "custom_emoji"
-        ]
+    custom_entities = [
+        entity for entity in entities
+        if entity.type == "custom_emoji"
+    ]
 
-        if custom_entities:
-            emoji_id = custom_entities[0].custom_emoji_id
+    if custom_entities:
+        emoji_id = custom_entities[0].custom_emoji_id
 
-            for entity in sorted(custom_entities, key=lambda e: e.offset, reverse=True):
-                cleaned_text = remove_utf16_range(
-                    cleaned_text,
-                    entity.offset,
-                    entity.length
-                )
+        for entity in sorted(custom_entities, key=lambda e: e.offset, reverse=True):
+            cleaned_text = remove_utf16_range(
+                cleaned_text,
+                entity.offset,
+                entity.length
+            )
 
     cleaned_text = " ".join(cleaned_text.split()).strip()
     return cleaned_text, emoji_id
@@ -128,10 +125,8 @@ def extract_text_and_custom_emoji(message):
 
 def db_connect():
     database_url = get_database_url()
-
     if not database_url:
         raise RuntimeError("DATABASE_URL не найден. Добавь DATABASE_URL в Railway Variables.")
-
     return psycopg.connect(database_url, autocommit=True)
 
 
@@ -142,19 +137,13 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS categories (
                     id SERIAL PRIMARY KEY,
                     name TEXT NOT NULL UNIQUE,
+                    emoji_id TEXT,
+                    is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
             """)
-
-            cur.execute("""
-                ALTER TABLE categories
-                ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
-            """)
-
-            cur.execute("""
-                ALTER TABLE categories
-                ADD COLUMN IF NOT EXISTS emoji_id TEXT;
-            """)
+            cur.execute("ALTER TABLE categories ADD COLUMN IF NOT EXISTS emoji_id TEXT;")
+            cur.execute("ALTER TABLE categories ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;")
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS models (
@@ -162,20 +151,14 @@ def init_db():
                     category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
                     name TEXT NOT NULL,
                     description TEXT DEFAULT '',
+                    emoji_id TEXT,
                     is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
             """)
-
-            cur.execute("""
-                ALTER TABLE models
-                ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
-            """)
-
-            cur.execute("""
-                ALTER TABLE models
-                ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
-            """)
+            cur.execute("ALTER TABLE models ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';")
+            cur.execute("ALTER TABLE models ADD COLUMN IF NOT EXISTS emoji_id TEXT;")
+            cur.execute("ALTER TABLE models ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;")
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS product_types (
@@ -183,20 +166,14 @@ def init_db():
                     model_id INTEGER NOT NULL REFERENCES models(id) ON DELETE CASCADE,
                     name TEXT NOT NULL,
                     description TEXT DEFAULT '',
+                    emoji_id TEXT,
                     is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
             """)
-
-            cur.execute("""
-                ALTER TABLE product_types
-                ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
-            """)
-
-            cur.execute("""
-                ALTER TABLE product_types
-                ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
-            """)
+            cur.execute("ALTER TABLE product_types ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';")
+            cur.execute("ALTER TABLE product_types ADD COLUMN IF NOT EXISTS emoji_id TEXT;")
+            cur.execute("ALTER TABLE product_types ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;")
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS products (
@@ -207,46 +184,20 @@ def init_db():
                     description TEXT DEFAULT '',
                     photo_file_id TEXT,
                     price TEXT NOT NULL DEFAULT '',
+                    emoji_id TEXT,
                     is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT NOW(),
                     updated_at TIMESTAMP DEFAULT NOW()
                 );
             """)
-
-            cur.execute("""
-                ALTER TABLE products
-                ADD COLUMN IF NOT EXISTS model_id INTEGER REFERENCES models(id) ON DELETE CASCADE;
-            """)
-
-            cur.execute("""
-                ALTER TABLE products
-                ADD COLUMN IF NOT EXISTS type_id INTEGER REFERENCES product_types(id) ON DELETE CASCADE;
-            """)
-
-            cur.execute("""
-                ALTER TABLE products
-                ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
-            """)
-
-            cur.execute("""
-                ALTER TABLE products
-                ADD COLUMN IF NOT EXISTS photo_file_id TEXT;
-            """)
-
-            cur.execute("""
-                ALTER TABLE products
-                ADD COLUMN IF NOT EXISTS price TEXT NOT NULL DEFAULT '';
-            """)
-
-            cur.execute("""
-                ALTER TABLE products
-                ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
-            """)
-
-            cur.execute("""
-                ALTER TABLE products
-                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
-            """)
+            cur.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS model_id INTEGER REFERENCES models(id) ON DELETE CASCADE;")
+            cur.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS type_id INTEGER REFERENCES product_types(id) ON DELETE CASCADE;")
+            cur.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';")
+            cur.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS photo_file_id TEXT;")
+            cur.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS price TEXT NOT NULL DEFAULT '';")
+            cur.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS emoji_id TEXT;")
+            cur.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;")
+            cur.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();")
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS orders (
@@ -262,31 +213,11 @@ def init_db():
                     created_at TIMESTAMP DEFAULT NOW()
                 );
             """)
-
-            cur.execute("""
-                ALTER TABLE orders
-                ADD COLUMN IF NOT EXISTS phone TEXT;
-            """)
-
-            cur.execute("""
-                ALTER TABLE orders
-                ADD COLUMN IF NOT EXISTS address TEXT;
-            """)
-
-            cur.execute("""
-                ALTER TABLE orders
-                ADD COLUMN IF NOT EXISTS product_id INTEGER;
-            """)
-
-            cur.execute("""
-                ALTER TABLE orders
-                ADD COLUMN IF NOT EXISTS product_name TEXT;
-            """)
-
-            cur.execute("""
-                ALTER TABLE orders
-                ADD COLUMN IF NOT EXISTS price TEXT;
-            """)
+            cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS phone TEXT;")
+            cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS address TEXT;")
+            cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS product_id INTEGER;")
+            cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS product_name TEXT;")
+            cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS price TEXT;")
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS price_history (
@@ -324,7 +255,7 @@ def init_db():
 
 
 # =========================
-# CATEGORIES
+# CATEGORY DB
 # =========================
 
 def get_categories():
@@ -399,14 +330,14 @@ def delete_category(category_id):
 
 
 # =========================
-# MODELS
+# MODEL DB
 # =========================
 
 def get_models_by_category(category_id):
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT id, name, description
+                SELECT id, name, description, emoji_id
                 FROM models
                 WHERE category_id = %s AND is_active = TRUE
                 ORDER BY id;
@@ -442,56 +373,44 @@ def get_all_models():
             return cur.fetchall()
 
 
-def add_model(category_id, name, description):
+def add_model(category_id, name, description, emoji_id=None):
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO models (category_id, name, description)
-                VALUES (%s, %s, %s)
+                INSERT INTO models (category_id, name, description, emoji_id)
+                VALUES (%s, %s, %s, %s)
                 RETURNING id;
-            """, (category_id, name, description))
+            """, (category_id, name, description, emoji_id))
             return cur.fetchone()[0]
 
 
 def rename_model(model_id, new_name):
     with db_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE models
-                SET name = %s
-                WHERE id = %s;
-            """, (new_name, model_id))
+            cur.execute("UPDATE models SET name = %s WHERE id = %s;", (new_name, model_id))
 
 
 def update_model_description(model_id, new_description):
     with db_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE models
-                SET description = %s
-                WHERE id = %s;
-            """, (new_description, model_id))
+            cur.execute("UPDATE models SET description = %s WHERE id = %s;", (new_description, model_id))
 
 
 def delete_model(model_id):
     with db_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE models
-                SET is_active = FALSE
-                WHERE id = %s;
-            """, (model_id,))
+            cur.execute("UPDATE models SET is_active = FALSE WHERE id = %s;", (model_id,))
 
 
 # =========================
-# PRODUCT TYPES
+# PRODUCT TYPE DB
 # =========================
 
 def get_types_by_model(model_id):
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT id, name, description
+                SELECT id, name, description, emoji_id
                 FROM product_types
                 WHERE model_id = %s AND is_active = TRUE
                 ORDER BY id;
@@ -543,56 +462,44 @@ def get_all_types():
             return cur.fetchall()
 
 
-def add_type(model_id, name, description):
+def add_type(model_id, name, description, emoji_id=None):
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO product_types (model_id, name, description)
-                VALUES (%s, %s, %s)
+                INSERT INTO product_types (model_id, name, description, emoji_id)
+                VALUES (%s, %s, %s, %s)
                 RETURNING id;
-            """, (model_id, name, description))
+            """, (model_id, name, description, emoji_id))
             return cur.fetchone()[0]
 
 
 def rename_type(type_id, new_name):
     with db_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE product_types
-                SET name = %s
-                WHERE id = %s;
-            """, (new_name, type_id))
+            cur.execute("UPDATE product_types SET name = %s WHERE id = %s;", (new_name, type_id))
 
 
 def update_type_description(type_id, new_description):
     with db_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE product_types
-                SET description = %s
-                WHERE id = %s;
-            """, (new_description, type_id))
+            cur.execute("UPDATE product_types SET description = %s WHERE id = %s;", (new_description, type_id))
 
 
 def delete_type(type_id):
     with db_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE product_types
-                SET is_active = FALSE
-                WHERE id = %s;
-            """, (type_id,))
+            cur.execute("UPDATE product_types SET is_active = FALSE WHERE id = %s;", (type_id,))
 
 
 # =========================
-# PRODUCTS
+# PRODUCT DB
 # =========================
 
 def get_products_by_type(type_id):
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT id, name, description, photo_file_id, price
+                SELECT id, name, description, photo_file_id, price, emoji_id
                 FROM products
                 WHERE type_id = %s AND is_active = TRUE
                 ORDER BY id;
@@ -653,7 +560,7 @@ def get_all_products():
             return cur.fetchall()
 
 
-def add_product(type_id, name, description, photo_file_id, price):
+def add_product(type_id, name, description, photo_file_id, price, emoji_id=None):
     product_type = get_type(type_id)
 
     if not product_type:
@@ -664,10 +571,11 @@ def add_product(type_id, name, description, photo_file_id, price):
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO products (model_id, type_id, name, description, photo_file_id, price)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO products
+                (model_id, type_id, name, description, photo_file_id, price, emoji_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id;
-            """, (model_id, type_id, name, description, photo_file_id, price))
+            """, (model_id, type_id, name, description, photo_file_id, price, emoji_id))
             return cur.fetchone()[0]
 
 
@@ -758,11 +666,7 @@ def save_order(user_id, username, full_name, phone, address, product_id, product
 def is_admin_in_db(telegram_id):
     with db_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id
-                FROM admins
-                WHERE telegram_id = %s;
-            """, (telegram_id,))
+            cur.execute("SELECT id FROM admins WHERE telegram_id = %s;", (telegram_id,))
             return cur.fetchone() is not None
 
 
@@ -836,10 +740,8 @@ def pbutton(text, callback_data, emoji_id=None):
 
 def make_two_columns(buttons):
     keyboard = []
-
     for i in range(0, len(buttons), 2):
         keyboard.append(buttons[i:i + 2])
-
     return keyboard
 
 
@@ -1035,17 +937,20 @@ def admin_products_keyboard(page=0):
 
 
 # =========================
-# HELPERS
+# STATE HELPERS
 # =========================
 
 def clear_admin_temp_data(context):
     keys_to_clear = [
         "new_model_category_id",
         "new_model_name",
+        "new_model_emoji_id",
         "new_type_model_id",
         "new_type_name",
+        "new_type_emoji_id",
         "new_product_type_id",
         "new_product_name",
+        "new_product_emoji_id",
         "new_product_description",
         "new_product_photo_file_id",
         "edit_category_id",
@@ -1160,7 +1065,7 @@ async def delete_catalog_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# START / ADMIN
+# COMMANDS
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1271,6 +1176,80 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     admin_state = context.user_data.get("admin_state")
     order_state = context.user_data.get("order_state")
+
+    # ===== FAST FIX: PRODUCT PRICE AFTER PHOTO =====
+    # Этот блок стоит высоко специально, чтобы цена товара точно сохранялась.
+    if admin_state == "add_product_price":
+        if not is_admin_user(user_id) or not is_admin_logged(context):
+            await update.message.reply_text("Нет доступа.")
+            return
+
+        type_id = context.user_data.get("new_product_type_id")
+        name = context.user_data.get("new_product_name")
+        emoji_id = context.user_data.get("new_product_emoji_id")
+        description = context.user_data.get("new_product_description", "")
+        photo_file_id = context.user_data.get("new_product_photo_file_id")
+        price = text.strip()
+
+        if not price:
+            await update.message.reply_text(
+                "Цена пустая. Введите цену товара, например: 100 000",
+                reply_markup=cancel_admin_keyboard()
+            )
+            return
+
+        if not type_id or not name:
+            await update.message.reply_text(
+                (
+                    "Ошибка добавления товара.\n\n"
+                    f"type_id: {type_id}\n"
+                    f"name: {name}\n\n"
+                    "Попробуйте добавить товар заново."
+                ),
+                reply_markup=admin_keyboard()
+            )
+            clear_admin_temp_data(context)
+            return
+
+        try:
+            product_id = add_product(
+                type_id=type_id,
+                name=name,
+                description=description,
+                photo_file_id=photo_file_id,
+                price=price,
+                emoji_id=emoji_id
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                f"Ошибка сохранения товара:\n{e}",
+                reply_markup=admin_keyboard()
+            )
+            clear_admin_temp_data(context)
+            return
+
+        if not product_id:
+            await update.message.reply_text(
+                "Ошибка: вид товара не найден.",
+                reply_markup=admin_keyboard()
+            )
+            clear_admin_temp_data(context)
+            return
+
+        clear_admin_temp_data(context)
+
+        await update.message.reply_text(
+            (
+                "Товар добавлен ✅\n\n"
+                f"ID: {product_id}\n"
+                f"Название: {name}\n"
+                f"Цена: {price}\n"
+                f"Фото: {'есть' if photo_file_id else 'нет'}\n"
+                f"Premium emoji: {'есть' if emoji_id else 'нет'}"
+            ),
+            reply_markup=admin_keyboard()
+        )
+        return
 
     if admin_state and text.lower() in ["назад", "отмена", "/cancel"]:
         clear_admin_temp_data(context)
@@ -1431,7 +1410,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         category_id = add_category(category_name, emoji_id)
-        context.user_data["admin_state"] = None
+        clear_admin_temp_data(context)
 
         await update.message.reply_text(
             (
@@ -1480,8 +1459,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=admin_keyboard()
             )
 
-        context.user_data["admin_state"] = None
-        context.user_data.pop("edit_category_id", None)
+        clear_admin_temp_data(context)
         return
 
     # ===== MODEL =====
@@ -1491,7 +1469,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Нет доступа.")
             return
 
-        context.user_data["new_model_name"] = text
+        model_name, emoji_id = extract_text_and_custom_emoji(update.message)
+
+        if not model_name:
+            await update.message.reply_text(
+                "Название модели пустое. Отправьте premium emoji вместе с текстом, например: [emoji] iPhone 17",
+                reply_markup=cancel_admin_keyboard()
+            )
+            return
+
+        context.user_data["new_model_name"] = model_name
+        context.user_data["new_model_emoji_id"] = emoji_id
         context.user_data["admin_state"] = "add_model_description"
 
         await update.message.reply_text(
@@ -1510,6 +1498,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         category_id = context.user_data.get("new_model_category_id")
         model_name = context.user_data.get("new_model_name")
+        emoji_id = context.user_data.get("new_model_emoji_id")
         description = "" if text == "-" else text
 
         if not category_id or not model_name:
@@ -1520,15 +1509,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        model_id = add_model(category_id, model_name, description)
-
+        model_id = add_model(category_id, model_name, description, emoji_id)
         clear_admin_temp_data(context)
 
         await update.message.reply_text(
             (
                 "Модель добавлена ✅\n\n"
                 f"ID: {model_id}\n"
-                f"Название: {model_name}"
+                f"Название: {model_name}\n"
+                f"Premium emoji: {'есть' if emoji_id else 'нет'}"
             ),
             reply_markup=admin_keyboard()
         )
@@ -1584,7 +1573,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Нет доступа.")
             return
 
-        context.user_data["new_type_name"] = text
+        type_name, emoji_id = extract_text_and_custom_emoji(update.message)
+
+        if not type_name:
+            await update.message.reply_text(
+                "Название вида товара пустое. Отправьте premium emoji вместе с текстом, например: [emoji] e-Sim",
+                reply_markup=cancel_admin_keyboard()
+            )
+            return
+
+        context.user_data["new_type_name"] = type_name
+        context.user_data["new_type_emoji_id"] = emoji_id
         context.user_data["admin_state"] = "add_type_description"
 
         await update.message.reply_text(
@@ -1604,6 +1603,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         model_id = context.user_data.get("new_type_model_id")
         type_name = context.user_data.get("new_type_name")
+        emoji_id = context.user_data.get("new_type_emoji_id")
         description = "" if text == "-" else text
 
         if not model_id or not type_name:
@@ -1614,14 +1614,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        type_id = add_type(model_id, type_name, description)
+        type_id = add_type(model_id, type_name, description, emoji_id)
         clear_admin_temp_data(context)
 
         await update.message.reply_text(
             (
                 "Вид товара добавлен ✅\n\n"
                 f"ID: {type_id}\n"
-                f"Название: {type_name}"
+                f"Название: {type_name}\n"
+                f"Premium emoji: {'есть' if emoji_id else 'нет'}"
             ),
             reply_markup=admin_keyboard()
         )
@@ -1677,7 +1678,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Нет доступа.")
             return
 
-        context.user_data["new_product_name"] = text
+        product_name, emoji_id = extract_text_and_custom_emoji(update.message)
+
+        if not product_name:
+            await update.message.reply_text(
+                "Название товара пустое. Отправьте premium emoji вместе с текстом, например: [emoji] iPhone 17 256GB e-Sim Blue",
+                reply_markup=cancel_admin_keyboard()
+            )
+            return
+
+        context.user_data["new_product_name"] = product_name
+        context.user_data["new_product_emoji_id"] = emoji_id
         context.user_data["admin_state"] = "add_product_description"
 
         await update.message.reply_text(
@@ -1725,55 +1736,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Нужно отправить фото или написать -",
             reply_markup=cancel_admin_keyboard()
-        )
-        return
-
-    if admin_state == "add_product_price":
-        if not is_admin_user(user_id) or not is_admin_logged(context):
-            await update.message.reply_text("Нет доступа.")
-            return
-
-        type_id = context.user_data.get("new_product_type_id")
-        name = context.user_data.get("new_product_name")
-        description = context.user_data.get("new_product_description", "")
-        photo_file_id = context.user_data.get("new_product_photo_file_id")
-        price = text
-
-        if not type_id or not name:
-            clear_admin_temp_data(context)
-            await update.message.reply_text(
-                "Ошибка добавления товара. Попробуйте заново.",
-                reply_markup=admin_keyboard()
-            )
-            return
-
-        product_id = add_product(
-            type_id=type_id,
-            name=name,
-            description=description,
-            photo_file_id=photo_file_id,
-            price=price
-        )
-
-        if not product_id:
-            clear_admin_temp_data(context)
-            await update.message.reply_text(
-                "Ошибка: вид товара не найден.",
-                reply_markup=admin_keyboard()
-            )
-            return
-
-        clear_admin_temp_data(context)
-
-        await update.message.reply_text(
-            (
-                "Товар добавлен ✅\n\n"
-                f"ID: {product_id}\n"
-                f"Название: {name}\n"
-                f"Цена: {price}\n"
-                f"Фото: {'есть' if photo_file_id else 'нет'}"
-            ),
-            reply_markup=admin_keyboard()
         )
         return
 
@@ -1884,7 +1846,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         updated = []
         errors = []
-
         lines = text.splitlines()
 
         for line in lines:
@@ -2016,18 +1977,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         category = get_category(category_id)
 
         if not category:
-            await safe_show_text(
-                query,
-                "Категория не найдена.",
-                catalog_keyboard()
-            )
+            await safe_show_text(query, "Категория не найдена.", catalog_keyboard())
             return
 
         models = get_models_by_category(category_id)
 
         buttons = [
-            button(name, f"model_{model_id}")
-            for model_id, name, description in models
+            pbutton(name, f"model_{model_id}", emoji_id=emoji_id)
+            for model_id, name, description, emoji_id in models
         ]
 
         keyboard = make_two_columns(buttons)
@@ -2039,30 +1996,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             text_msg = f"Категория: {category[1]}\n\nВыберите модель:"
 
-        await safe_show_text(
-            query,
-            text_msg,
-            InlineKeyboardMarkup(keyboard)
-        )
+        await safe_show_text(query, text_msg, InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("model_"):
         model_id = int(data.replace("model_", ""))
         model = get_model(model_id)
 
         if not model:
-            await safe_show_text(
-                query,
-                "Модель не найдена.",
-                catalog_keyboard()
-            )
+            await safe_show_text(query, "Модель не найдена.", catalog_keyboard())
             return
 
         model_id, model_name, description, category_id, category_name = model
         types = get_types_by_model(model_id)
 
         buttons = [
-            button(type_name, f"type_{type_id}")
-            for type_id, type_name, type_description in types
+            pbutton(type_name, f"type_{type_id}", emoji_id=emoji_id)
+            for type_id, type_name, type_description, emoji_id in types
         ]
 
         keyboard = make_two_columns(buttons)
@@ -2079,22 +2028,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             text_msg += "\nВыберите вид товара:"
 
-        await safe_show_text(
-            query,
-            text_msg,
-            InlineKeyboardMarkup(keyboard)
-        )
+        await safe_show_text(query, text_msg, InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("type_"):
         type_id = int(data.replace("type_", ""))
         product_type = get_type(type_id)
 
         if not product_type:
-            await safe_show_text(
-                query,
-                "Вид товара не найден.",
-                catalog_keyboard()
-            )
+            await safe_show_text(query, "Вид товара не найден.", catalog_keyboard())
             return
 
         (
@@ -2110,8 +2051,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         products = get_products_by_type(type_id)
 
         buttons = [
-            button(product_name, f"product_{product_id}")
-            for product_id, product_name, product_description, photo_file_id, price in products
+            pbutton(product_name, f"product_{product_id}", emoji_id=emoji_id)
+            for product_id, product_name, product_description, photo_file_id, price, emoji_id in products
         ]
 
         keyboard = make_two_columns(buttons)
@@ -2132,11 +2073,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             text_msg += "\nВыберите товар:"
 
-        await safe_show_text(
-            query,
-            text_msg,
-            InlineKeyboardMarkup(keyboard)
-        )
+        await safe_show_text(query, text_msg, InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("product_"):
         product_id = int(data.replace("product_", ""))
@@ -2186,7 +2123,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         context.user_data["admin_state"] = "add_category_name"
-
         await safe_show_text(
             query,
             "➕ Добавление категории\n\nВведите название новой категории.\n\nМожно отправить premium emoji + текст.",
@@ -2201,11 +2137,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         categories = get_categories()
 
         if not categories:
-            await safe_show_text(
-                query,
-                "Категорий пока нет.\n\nСначала добавьте хотя бы одну категорию.",
-                admin_keyboard()
-            )
+            await safe_show_text(query, "Категорий пока нет.\n\nСначала добавьте хотя бы одну категорию.", admin_keyboard())
             return
 
         await safe_show_text(
@@ -2215,12 +2147,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("admin_add_model_page_"):
-        if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
-            await safe_show_text(query, "Нет доступа.")
-            return
-
         page = int(data.replace("admin_add_model_page_", ""))
-
         await safe_show_text(
             query,
             "➕ Добавление модели\n\nВыберите категорию для новой модели:",
@@ -2228,10 +2155,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("admin_model_cat_"):
-        if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
-            await safe_show_text(query, "Нет доступа.")
-            return
-
         category_id = int(data.replace("admin_model_cat_", ""))
 
         context.user_data["new_model_category_id"] = category_id
@@ -2239,7 +2162,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await safe_show_text(
             query,
-            "Введите название модели.\n\nНапример: iPhone 17",
+            "Введите название модели.\n\nНапример: iPhone 17\n\nМожно отправить premium emoji + текст.",
             cancel_admin_keyboard()
         )
 
@@ -2251,11 +2174,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         models = get_all_models()
 
         if not models:
-            await safe_show_text(
-                query,
-                "Моделей пока нет.\n\nСначала добавьте хотя бы одну модель.",
-                admin_keyboard()
-            )
+            await safe_show_text(query, "Моделей пока нет.\n\nСначала добавьте хотя бы одну модель.", admin_keyboard())
             return
 
         await safe_show_text(
@@ -2265,12 +2184,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("admin_add_type_page_"):
-        if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
-            await safe_show_text(query, "Нет доступа.")
-            return
-
         page = int(data.replace("admin_add_type_page_", ""))
-
         await safe_show_text(
             query,
             "➕ Добавление вида товара\n\nВыберите модель:",
@@ -2278,10 +2192,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("admin_type_model_"):
-        if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
-            await safe_show_text(query, "Нет доступа.")
-            return
-
         model_id = int(data.replace("admin_type_model_", ""))
 
         context.user_data["new_type_model_id"] = model_id
@@ -2289,7 +2199,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await safe_show_text(
             query,
-            "Введите название вида товара.\n\nНапример: e-Sim, Ростест, Global, Pro Max",
+            "Введите название вида товара.\n\nНапример: e-Sim, Ростест, Global, Pro Max\n\nМожно отправить premium emoji + текст.",
             cancel_admin_keyboard()
         )
 
@@ -2301,11 +2211,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         types = get_all_types()
 
         if not types:
-            await safe_show_text(
-                query,
-                "Видов товара пока нет.\n\nСначала добавьте хотя бы один вид товара.",
-                admin_keyboard()
-            )
+            await safe_show_text(query, "Видов товара пока нет.\n\nСначала добавьте хотя бы один вид товара.", admin_keyboard())
             return
 
         await safe_show_text(
@@ -2315,12 +2221,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("admin_add_product_page_"):
-        if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
-            await safe_show_text(query, "Нет доступа.")
-            return
-
         page = int(data.replace("admin_add_product_page_", ""))
-
         await safe_show_text(
             query,
             "➕ Добавление товара\n\nВыберите вид товара:",
@@ -2328,10 +2229,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("admin_product_type_"):
-        if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
-            await safe_show_text(query, "Нет доступа.")
-            return
-
         type_id = int(data.replace("admin_product_type_", ""))
 
         context.user_data["new_product_type_id"] = type_id
@@ -2342,7 +2239,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (
                 "Введите название товара.\n\n"
                 "Например:\n"
-                "iPhone 17 256GB e-Sim Blue"
+                "iPhone 17 256GB e-Sim Blue\n\n"
+                "Можно отправить premium emoji + текст."
             ),
             cancel_admin_keyboard()
         )
@@ -2357,11 +2255,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         products = get_all_products()
 
         if not products:
-            await safe_show_text(
-                query,
-                "Товаров пока нет.",
-                admin_keyboard()
-            )
+            await safe_show_text(query, "Товаров пока нет.", admin_keyboard())
             return
 
         lines = []
@@ -2381,28 +2275,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         context.user_data["admin_state"] = "bulk_prices"
-
-        await safe_show_text(
-            query,
-            text,
-            cancel_admin_keyboard()
-        )
+        await safe_show_text(query, text, cancel_admin_keyboard())
 
     # ===== ADMIN EDIT CATEGORIES =====
 
     elif data == "admin_edit_categories":
-        if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
-            await safe_show_text(query, "Нет доступа.")
-            return
-
         categories = get_categories()
 
         if not categories:
-            await safe_show_text(
-                query,
-                "Редактор категорий\n\nКатегорий пока нет.",
-                admin_keyboard()
-            )
+            await safe_show_text(query, "Редактор категорий\n\nКатегорий пока нет.", admin_keyboard())
             return
 
         await safe_show_text(
@@ -2413,7 +2294,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("admin_edit_categories_page_"):
         page = int(data.replace("admin_edit_categories_page_", ""))
-
         await safe_show_text(
             query,
             "Редактор категорий Netizen\n\nВыберите категорию для редактирования:",
@@ -2459,11 +2339,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         category_id = int(data.replace("admin_delete_category_", ""))
         delete_category(category_id)
 
-        await safe_show_text(
-            query,
-            "Категория удалена ✅\n\nОна больше не отображается в каталоге.",
-            admin_keyboard()
-        )
+        await safe_show_text(query, "Категория удалена ✅\n\nОна больше не отображается в каталоге.", admin_keyboard())
 
     # ===== ADMIN EDIT MODELS =====
 
@@ -2471,11 +2347,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         models = get_all_models()
 
         if not models:
-            await safe_show_text(
-                query,
-                "Редактор моделей\n\nМоделей пока нет.",
-                admin_keyboard()
-            )
+            await safe_show_text(query, "Редактор моделей\n\nМоделей пока нет.", admin_keyboard())
             return
 
         await safe_show_text(
@@ -2486,7 +2358,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("admin_edit_models_page_"):
         page = int(data.replace("admin_edit_models_page_", ""))
-
         await safe_show_text(
             query,
             "Редактор моделей Netizen\n\nВыберите модель для редактирования:",
@@ -2502,7 +2373,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         model_id, model_name, description, category_id, category_name = model
-
         text_msg = (
             f"Модель #{model_id}\n\n"
             f"Категория: {category_name}\n"
@@ -2530,11 +2400,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_model_id"] = model_id
         context.user_data["admin_state"] = "rename_model"
 
-        await safe_show_text(
-            query,
-            "Введите новое название модели:",
-            cancel_admin_keyboard()
-        )
+        await safe_show_text(query, "Введите новое название модели:", cancel_admin_keyboard())
 
     elif data.startswith("admin_model_desc_"):
         model_id = int(data.replace("admin_model_desc_", ""))
@@ -2550,12 +2416,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("admin_delete_model_"):
         model_id = int(data.replace("admin_delete_model_", ""))
         delete_model(model_id)
-
-        await safe_show_text(
-            query,
-            "Модель удалена ✅\n\nОна больше не отображается в каталоге.",
-            admin_keyboard()
-        )
+        await safe_show_text(query, "Модель удалена ✅\n\nОна больше не отображается в каталоге.", admin_keyboard())
 
     # ===== ADMIN EDIT TYPES =====
 
@@ -2563,11 +2424,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         types = get_all_types()
 
         if not types:
-            await safe_show_text(
-                query,
-                "Редактор видов товара\n\nВидов товара пока нет.",
-                admin_keyboard()
-            )
+            await safe_show_text(query, "Редактор видов товара\n\nВидов товара пока нет.", admin_keyboard())
             return
 
         await safe_show_text(
@@ -2578,7 +2435,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("admin_edit_types_page_"):
         page = int(data.replace("admin_edit_types_page_", ""))
-
         await safe_show_text(
             query,
             "Редактор видов товара Netizen\n\nВыберите вид товара:",
@@ -2631,11 +2487,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_type_id"] = type_id
         context.user_data["admin_state"] = "rename_type"
 
-        await safe_show_text(
-            query,
-            "Введите новое название вида товара:",
-            cancel_admin_keyboard()
-        )
+        await safe_show_text(query, "Введите новое название вида товара:", cancel_admin_keyboard())
 
     elif data.startswith("admin_type_desc_"):
         type_id = int(data.replace("admin_type_desc_", ""))
@@ -2651,12 +2503,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("admin_delete_type_"):
         type_id = int(data.replace("admin_delete_type_", ""))
         delete_type(type_id)
-
-        await safe_show_text(
-            query,
-            "Вид товара удалён ✅\n\nОн больше не отображается в каталоге.",
-            admin_keyboard()
-        )
+        await safe_show_text(query, "Вид товара удалён ✅\n\nОн больше не отображается в каталоге.", admin_keyboard())
 
     # ===== ADMIN EDIT PRODUCTS =====
 
@@ -2664,11 +2511,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         products = get_all_products()
 
         if not products:
-            await safe_show_text(
-                query,
-                "Редактор товаров\n\nТоваров пока нет.",
-                admin_keyboard()
-            )
+            await safe_show_text(query, "Редактор товаров\n\nТоваров пока нет.", admin_keyboard())
             return
 
         await safe_show_text(
@@ -2679,7 +2522,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("admin_products_page_"):
         page = int(data.replace("admin_products_page_", ""))
-
         await safe_show_text(
             query,
             "Редактор товаров Netizen\n\nВыберите товар для редактирования:",
@@ -2739,11 +2581,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_product_id"] = product_id
         context.user_data["admin_state"] = "rename_product"
 
-        await safe_show_text(
-            query,
-            "Введите новое название товара:",
-            cancel_admin_keyboard()
-        )
+        await safe_show_text(query, "Введите новое название товара:", cancel_admin_keyboard())
 
     elif data.startswith("admin_product_desc_"):
         product_id = int(data.replace("admin_product_desc_", ""))
@@ -2772,11 +2610,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_product_id"] = product_id
         context.user_data["admin_state"] = "edit_product_price"
 
-        await safe_show_text(
-            query,
-            "Введите новую цену товара:",
-            cancel_admin_keyboard()
-        )
+        await safe_show_text(query, "Введите новую цену товара:", cancel_admin_keyboard())
 
     elif data.startswith("admin_product_delete_"):
         product_id = int(data.replace("admin_product_delete_", ""))
@@ -2796,32 +2630,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         clear_admin_temp_data(context)
-
-        await safe_show_text(
-            query,
-            ADMIN_PANEL_TEXT,
-            admin_keyboard()
-        )
+        await safe_show_text(query, ADMIN_PANEL_TEXT, admin_keyboard())
 
     elif data == "admin_menu":
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
             await safe_show_text(query, "Нет доступа.")
             return
 
-        await safe_show_text(
-            query,
-            ADMIN_PANEL_TEXT,
-            admin_keyboard()
-        )
+        await safe_show_text(query, ADMIN_PANEL_TEXT, admin_keyboard())
 
     elif data == "admin_logout":
         context.user_data["admin_logged"] = False
         clear_admin_temp_data(context)
-
-        await safe_show_text(
-            query,
-            "Вы вышли из админ-панели."
-        )
+        await safe_show_text(query, "Вы вышли из админ-панели.")
 
 
 # =========================
