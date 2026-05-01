@@ -1070,20 +1070,13 @@ async def show_product_card(query, product):
     ) = product
 
     caption = (
-        f"{product_name}
-
-"
-        f"ID товара: #{product_id}
-"
-        f"Цена: {price}
-"
+        f"{product_name}\n\n"
+        f"ID товара: #{product_id}\n"
+        f"Цена: {price}\n"
     )
 
     if description:
-        caption += f"
-Описание:
-{description}
-"
+        caption += f"\nОписание:\n{description}\n"
 
     keyboard = InlineKeyboardMarkup([
         [button("Купить", f"buy_{product_id}")],
