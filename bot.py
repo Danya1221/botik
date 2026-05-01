@@ -992,6 +992,50 @@ def clear_order_data(context):
     context.user_data["order_state"] = None
 
 
+def get_cart(context):
+    return context.user_data.setdefault("cart", [])
+
+
+def add_product_to_cart(context, product_id):
+    cart = get_cart(context)
+    cart.append(product_id)
+
+
+def clear_cart(context):
+    context.user_data["cart"] = []
+
+
+def build_cart_lines(context):
+    cart = get_cart(context)
+    lines = []
+    valid_product_ids = []
+
+    for index, product_id in enumerate(cart, start=1):
+        product = get_product(product_id)
+
+        if not product:
+            continue
+
+        (
+            real_product_id,
+            product_name,
+            description,
+            photo_file_id,
+            price,
+            type_id,
+            type_name,
+            model_id,
+            model_name,
+            category_id,
+            category_name
+        ) = product
+
+        valid_product_ids.append(real_product_id)
+        lines.append(f"{index}. #{real_product_id} — {product_name} — {price}")
+
+    return lines, valid_product_ids
+
+
 async def safe_show_text(query, text, reply_markup=None):
     try:
         await query.edit_message_text(
@@ -1026,19 +1070,26 @@ async def show_product_card(query, product):
     ) = product
 
     caption = (
-        f"{product_name}\n\n"
-        f"Категория: {category_name}\n"
-        f"Модель: {model_name}\n"
-        f"Вид товара: {type_name}\n"
-        f"Цена: {price}\n"
+        f"{product_name}
+
+"
+        f"ID товара: #{product_id}
+"
+        f"Цена: {price}
+"
     )
 
     if description:
-        caption += f"\nОписание:\n{description}\n"
+        caption += f"
+Описание:
+{description}
+"
 
     keyboard = InlineKeyboardMarkup([
         [button("Купить", f"buy_{product_id}")],
-        [button("Назад к товарам", f"type_{type_id}")],
+        [button("Добавить в корзину", f"addcart_{product_id}")],
+        [button("Открыть корзину", "cart")],
+        [button("Вернуться обратно", f"type_{type_id}")],
         [button("Вернуться в каталог", "catalog")],
     ])
 
@@ -1298,31 +1349,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if order_state == "wait_order_address":
-        product_id = context.user_data.get("order_product_id")
         order_name = context.user_data.get("order_name")
         order_phone = context.user_data.get("order_phone")
         order_address = text
 
-        product = get_product(product_id)
+        lines, valid_product_ids = build_cart_lines(context)
 
-        if not product:
+        if not valid_product_ids:
             clear_order_data(context)
-            await update.message.reply_text("Товар не найден. Заказ отменён.")
+            clear_cart(context)
+            await update.message.reply_text(
+                "Корзина пустая. Заказ отменён.",
+                reply_markup=reply_menu
+            )
             return
-
-        (
-            product_id,
-            product_name,
-            description,
-            photo_file_id,
-            price,
-            type_id,
-            type_name,
-            model_id,
-            model_name,
-            category_id,
-            category_name
-        ) = product
 
         admin_id = get_admin_id()
 
@@ -1331,24 +1371,28 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("ADMIN_ID не настроен.")
             return
 
-        save_order(
-            user_id=user.id,
-            username=username,
-            full_name=order_name,
-            phone=order_phone,
-            address=order_address,
-            product_id=product_id,
-            product_name=product_name,
-            price=price
-        )
+        items_text = "\n".join(lines)
+
+        for product_id in valid_product_ids:
+            product = get_product(product_id)
+
+            if not product:
+                continue
+
+            save_order(
+                user_id=user.id,
+                username=username,
+                full_name=order_name,
+                phone=order_phone,
+                address=order_address,
+                product_id=product[0],
+                product_name=product[1],
+                price=product[4]
+            )
 
         order_text = (
             "🆕 Новый заказ Netizen!\n\n"
-            f"Товар: {product_name}\n"
-            f"Категория: {category_name}\n"
-            f"Модель: {model_name}\n"
-            f"Вид товара: {type_name}\n"
-            f"Цена: {price}\n\n"
+            f"Товары:\n{items_text}\n\n"
             f"Имя клиента: {order_name}\n"
             f"Телефон: {order_phone}\n"
             f"Адрес: {order_address}\n\n"
@@ -1363,6 +1407,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         clear_order_data(context)
+        clear_cart(context)
 
         await update.message.reply_text(
             "Заказ оформлен ✅\n\nМенеджер скоро свяжется с вами.",
@@ -2097,6 +2142,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await show_product_card(query, product)
 
+    elif data.startswith("addcart_"):
+        product_id = int(data.replace("addcart_", ""))
+        product = get_product(product_id)
+
+        if not product:
+            await safe_show_text(query, "Товар не найден.")
+            return
+
+        add_product_to_cart(context, product_id)
+
+        await safe_show_text(
+            query,
+            (
+                "Товар добавлен в корзину ✅\n\n"
+                f"{product[1]}\n"
+                f"Цена: {product[4]}"
+            ),
+            InlineKeyboardMarkup([
+                [button("Открыть корзину", "cart")],
+                [button("Продолжить покупки", "catalog")],
+            ])
+        )
+
     elif data.startswith("buy_"):
         product_id = int(data.replace("buy_", ""))
         product = get_product(product_id)
@@ -2105,26 +2173,88 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_show_text(query, "Товар не найден.")
             return
 
-        context.user_data["order_product_id"] = product_id
+        clear_cart(context)
+        add_product_to_cart(context, product_id)
+
+        lines, valid_product_ids = build_cart_lines(context)
+        text_msg = (
+            "Корзина Netizen\n\n"
+            + "\n".join(lines)
+            + "\n\nНажмите «Оформить заказ», чтобы продолжить."
+        )
+
+        await safe_show_text(
+            query,
+            text_msg,
+            InlineKeyboardMarkup([
+                [button("Оформить заказ", "checkout")],
+                [button("Очистить корзину", "clear_cart")],
+                [button("Вернуться в каталог", "catalog")],
+            ])
+        )
+
+    elif data == "cart":
+        lines, valid_product_ids = build_cart_lines(context)
+
+        if not valid_product_ids:
+            await safe_show_text(
+                query,
+                "Корзина Netizen\n\nКорзина пока пустая.",
+                InlineKeyboardMarkup([
+                    [button("Вернуться в каталог", "catalog")]
+                ])
+            )
+            return
+
+        text_msg = (
+            "Корзина Netizen\n\n"
+            + "\n".join(lines)
+            + f"\n\nПозиций в корзине: {len(valid_product_ids)}"
+        )
+
+        await safe_show_text(
+            query,
+            text_msg,
+            InlineKeyboardMarkup([
+                [button("Оформить заказ", "checkout")],
+                [button("Очистить корзину", "clear_cart")],
+                [button("Вернуться в каталог", "catalog")],
+            ])
+        )
+
+    elif data == "clear_cart":
+        clear_cart(context)
+
+        await safe_show_text(
+            query,
+            "Корзина очищена ✅",
+            InlineKeyboardMarkup([
+                [button("Вернуться в каталог", "catalog")]
+            ])
+        )
+
+    elif data == "checkout":
+        lines, valid_product_ids = build_cart_lines(context)
+
+        if not valid_product_ids:
+            await safe_show_text(
+                query,
+                "Корзина пустая. Сначала добавьте товар.",
+                InlineKeyboardMarkup([
+                    [button("Вернуться в каталог", "catalog")]
+                ])
+            )
+            return
+
         context.user_data["order_state"] = "wait_order_name"
 
         await safe_show_text(
             query,
             (
                 "Оформление заказа\n\n"
-                f"Товар: {product[1]}\n"
-                f"Цена: {product[4]}\n\n"
+                f"Товары:\n{chr(10).join(lines)}\n\n"
                 "Введите имя и фамилию:"
             )
-        )
-
-    elif data == "cart":
-        await safe_show_text(
-            query,
-            "Корзина больше не используется.\n\nТеперь в карточке товара нажимайте кнопку Купить.",
-            InlineKeyboardMarkup([
-                [button("Вернуться в каталог", "catalog")]
-            ])
         )
 
     # ===== ADMIN ADD =====
