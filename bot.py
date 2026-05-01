@@ -4,7 +4,13 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
 
-TOKEN = os.getenv("8764879626:AAFblZOgO1GWINprG1Zp1kj5AvyiboejkuQ")
+def get_token():
+    token = os.environ.get("BOT_TOKEN")
+
+    if token:
+        token = token.strip()
+
+    return token
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -176,10 +182,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    if not TOKEN:
-        raise RuntimeError("BOT_TOKEN не найден. Добавь переменную BOT_TOKEN в Railway.")
+    token = get_token()
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    print("Проверка BOT_TOKEN...")
+    print("BOT_TOKEN найден:", bool(token))
+
+    if not token:
+        print("Ошибка: Railway не передал BOT_TOKEN в приложение.")
+        print("Проверь Variables в Railway.")
+        return
+
+    app = ApplicationBuilder().token(token).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
