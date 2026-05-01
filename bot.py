@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime
 
 import psycopg
@@ -119,6 +120,47 @@ def extract_text_and_custom_emoji(message):
     return cleaned_text, emoji_id
 
 
+def normalize_ru_phone(raw_phone):
+    digits = re.sub(r"\D", "", raw_phone or "")
+
+    # Принимаем +7 9XX XXX XX XX и 7 9XX XXX XX XX,
+    # но сохраняем в нужном виде через 8.
+    if len(digits) == 11 and digits.startswith("79"):
+        digits = "8" + digits[1:]
+
+    if len(digits) != 11:
+        return None
+
+    if not digits.startswith("89"):
+        return None
+
+    return f"{digits[0]} {digits[1:4]} {digits[4:7]} {digits[7:9]} {digits[9:11]}"
+
+
+def address_has_city(address):
+    text = " ".join((address or "").strip().split())
+
+    if not text:
+        return False
+
+    lower = text.lower()
+
+    # Явные варианты: "г. Москва", "город Москва"
+    if re.search(r"(^|[\s,])г\.\s*[а-яёa-z]", lower, re.IGNORECASE):
+        return True
+
+    if re.search(r"(^|[\s,])город\s+[а-яёa-z]", lower, re.IGNORECASE):
+        return True
+
+    # Вариант: "Москва, Парковый 1" — первая часть до запятой считается городом.
+    parts = [part.strip() for part in text.split(",") if part.strip()]
+
+    if len(parts) >= 2 and re.search(r"[а-яёa-z]", parts[0], re.IGNORECASE):
+        return True
+
+    return False
+
+
 # =========================
 # DATABASE
 # =========================
@@ -226,6 +268,8 @@ def init_db():
             cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS product_id INTEGER;")
             cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS product_name TEXT;")
             cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS price TEXT;")
+            cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS items TEXT;")
+            cur.execute("ALTER TABLE orders ALTER COLUMN items DROP NOT NULL;")
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS price_history (
@@ -724,7 +768,8 @@ def is_admin_logged(context):
 
 reply_menu = ReplyKeyboardMarkup(
     keyboard=[
-        ["📦 Каталог"]
+        ["📦 Каталог"],
+        ["🛒 Корзина"],
     ],
     resize_keyboard=True
 )
@@ -794,7 +839,7 @@ def catalog_keyboard():
     ]
 
     keyboard = make_two_columns(buttons)
-    keyboard.append([button("Открыть корзину", "cart")])
+    keyboard.append([button("🛒 Корзина", "cart")])
 
     return InlineKeyboardMarkup(keyboard)
 
@@ -1081,7 +1126,7 @@ async def show_product_card(query, product):
     keyboard = InlineKeyboardMarkup([
         [button("Купить", f"buy_{product_id}")],
         [button("Добавить в корзину", f"addcart_{product_id}")],
-        [button("Открыть корзину", "cart")],
+        [button("🛒 Корзина", "cart")],
         [button("Вернуться обратно", f"type_{type_id}")],
         [button("Вернуться в каталог", "catalog")],
     ])
@@ -1335,16 +1380,48 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if order_state == "wait_order_phone":
-        context.user_data["order_phone"] = text
+        normalized_phone = normalize_ru_phone(text)
+
+        if not normalized_phone:
+            await update.message.reply_text(
+                (
+                    "Номер указан неверно.\n\n"
+                    "Формат должен быть такой:\n"
+                    "8 9XX XXX XX XX\n\n"
+                    "Можно писать без пробелов, со скобками или дефисами.\n"
+                    "Пример: 89023911564"
+                )
+            )
+            return
+
+        context.user_data["order_phone"] = normalized_phone
         context.user_data["order_state"] = "wait_order_address"
 
-        await update.message.reply_text("Введите адрес доставки:")
+        await update.message.reply_text(
+            (
+                "Введите адрес доставки.\n\n"
+                "Обязательно укажите город.\n"
+                "Пример: г. Москва, Парковый 1"
+            )
+        )
         return
 
     if order_state == "wait_order_address":
         order_name = context.user_data.get("order_name")
         order_phone = context.user_data.get("order_phone")
         order_address = text
+
+        if not address_has_city(order_address):
+            await update.message.reply_text(
+                (
+                    "В адресе нужно указать город.\n\n"
+                    "Пример:\n"
+                    "г. Москва, Парковый 1\n\n"
+                    "Или:\n"
+                    "Москва, Парковый 1"
+                )
+            )
+            return
 
         lines, valid_product_ids = build_cart_lines(context)
 
@@ -1366,24 +1443,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         items_text = "\n".join(lines)
 
-        for product_id in valid_product_ids:
-            product = get_product(product_id)
+        try:
+            for product_id in valid_product_ids:
+                product = get_product(product_id)
 
-            if not product:
-                continue
+                if not product:
+                    continue
 
-            save_order(
-                user_id=user.id,
-                username=username,
-                full_name=order_name,
-                phone=order_phone,
-                address=order_address,
-                product_id=product[0],
-                product_name=product[1],
-                price=product[4]
-            )
+                save_order(
+                    user_id=user.id,
+                    username=username,
+                    full_name=order_name,
+                    phone=order_phone,
+                    address=order_address,
+                    product_id=product[0],
+                    product_name=product[1],
+                    price=product[4]
+                )
 
-        order_text = (
+            order_text = (
             "🆕 Новый заказ Netizen!\n\n"
             f"Товары:\n{items_text}\n\n"
             f"Имя клиента: {order_name}\n"
@@ -1394,10 +1472,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
         )
 
-        await context.bot.send_message(
-            chat_id=admin_id,
-            text=order_text
-        )
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=order_text
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                f"Ошибка оформления заказа:\n{e}",
+                reply_markup=reply_menu
+            )
+            return
 
         clear_order_data(context)
         clear_cart(context)
@@ -1949,9 +2033,39 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_catalog(update, context)
         return
 
+    if text == "🛒 Корзина":
+        await send_cart_message(update, context)
+        return
+
     await update.message.reply_text(
-        "Нажмите кнопку 📦 Каталог внизу.",
+        "Нажмите кнопку 📦 Каталог или 🛒 Корзина внизу.",
         reply_markup=reply_menu
+    )
+
+
+async def send_cart_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lines, valid_product_ids = build_cart_lines(context)
+
+    if not valid_product_ids:
+        await update.message.reply_text(
+            "Корзина Netizen\n\nКорзина пока пустая.",
+            reply_markup=reply_menu
+        )
+        return
+
+    text_msg = (
+        "Корзина Netizen\n\n"
+        + "\n".join(lines)
+        + f"\n\nПозиций в корзине: {len(valid_product_ids)}"
+    )
+
+    await update.message.reply_text(
+        text_msg,
+        reply_markup=InlineKeyboardMarkup([
+            [button("Оформить заказ", "checkout")],
+            [button("Очистить корзину", "clear_cart")],
+            [button("Вернуться в каталог", "catalog")],
+        ])
     )
 
 
@@ -2039,7 +2153,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = make_two_columns(buttons)
         keyboard.append([button("Назад в каталог", "catalog")])
-        keyboard.append([button("Открыть корзину", "cart")])
+        keyboard.append([button("🛒 Корзина", "cart")])
 
         if not models:
             text_msg = f"Категория: {category[1]}\n\nМоделей пока нет."
@@ -2153,7 +2267,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Цена: {product[4]}"
             ),
             InlineKeyboardMarkup([
-                [button("Открыть корзину", "cart")],
+                [button("🛒 Корзина", "cart")],
                 [button("Продолжить покупки", "catalog")],
             ])
         )
