@@ -22,9 +22,7 @@ from telegram.ext import (
 CATALOG_LIFETIME_SECONDS = 24 * 60 * 60
 ADMIN_PAGE_SIZE = 12
 
-# Premium emoji включены только для клиентского каталога.
 USE_PREMIUM_BUTTON_EMOJI = True
-DEFAULT_PREMIUM_EMOJI_ID = "5339547060859345402"
 
 ADMIN_PANEL_TEXT = (
     "⚙️ Админ-панель Netizen\n\n"
@@ -77,6 +75,56 @@ def get_admin_password():
 
 
 # =========================
+# CUSTOM EMOJI HELPERS
+# =========================
+
+def utf16_len(text):
+    return len(text.encode("utf-16-le")) // 2
+
+
+def remove_utf16_range(text, offset, length):
+    result = []
+    current_offset = 0
+
+    for char in text:
+        char_len = utf16_len(char)
+        next_offset = current_offset + char_len
+
+        if next_offset <= offset or current_offset >= offset + length:
+            result.append(char)
+
+        current_offset = next_offset
+
+    return "".join(result)
+
+
+def extract_text_and_custom_emoji(message):
+    text = message.text or ""
+    emoji_id = None
+    cleaned_text = text
+
+    if message.entities:
+        custom_entities = [
+            entity for entity in message.entities
+            if entity.type == "custom_emoji"
+        ]
+
+        if custom_entities:
+            emoji_id = custom_entities[0].custom_emoji_id
+
+            for entity in sorted(custom_entities, key=lambda e: e.offset, reverse=True):
+                cleaned_text = remove_utf16_range(
+                    cleaned_text,
+                    entity.offset,
+                    entity.length
+                )
+
+    cleaned_text = " ".join(cleaned_text.split()).strip()
+
+    return cleaned_text, emoji_id
+
+
+# =========================
 # DATABASE
 # =========================
 
@@ -103,6 +151,11 @@ def init_db():
             cur.execute("""
                 ALTER TABLE categories
                 ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+            """)
+
+            cur.execute("""
+                ALTER TABLE categories
+                ADD COLUMN IF NOT EXISTS emoji_id TEXT;
             """)
 
             cur.execute("""
@@ -194,6 +247,18 @@ def get_categories():
             return cur.fetchall()
 
 
+def get_categories_for_catalog():
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, name, emoji_id
+                FROM categories
+                WHERE is_active = TRUE
+                ORDER BY id;
+            """)
+            return cur.fetchall()
+
+
 def get_category(category_id):
     with db_connect() as conn:
         with conn.cursor() as cur:
@@ -205,27 +270,30 @@ def get_category(category_id):
             return cur.fetchone()
 
 
-def add_category(name):
+def add_category(name, emoji_id=None):
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO categories (name, is_active)
-                VALUES (%s, TRUE)
+                INSERT INTO categories (name, emoji_id, is_active)
+                VALUES (%s, %s, TRUE)
                 ON CONFLICT (name)
-                DO UPDATE SET is_active = TRUE
+                DO UPDATE SET
+                    is_active = TRUE,
+                    emoji_id = EXCLUDED.emoji_id
                 RETURNING id;
-            """, (name,))
+            """, (name, emoji_id))
             return cur.fetchone()[0]
 
 
-def rename_category(category_id, new_name):
+def rename_category(category_id, new_name, emoji_id=None):
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE categories
-                SET name = %s
+                SET name = %s,
+                    emoji_id = %s
                 WHERE id = %s;
-            """, (new_name, category_id))
+            """, (new_name, emoji_id, category_id))
 
 
 def delete_category(category_id):
@@ -515,7 +583,7 @@ def button(text, callback_data):
     )
 
 
-def pbutton(text, callback_data, emoji_id=DEFAULT_PREMIUM_EMOJI_ID):
+def pbutton(text, callback_data, emoji_id=None):
     api_kwargs = {}
 
     if USE_PREMIUM_BUTTON_EMOJI and emoji_id:
@@ -562,15 +630,19 @@ def pagination_buttons(prefix, page, total, page_size=ADMIN_PAGE_SIZE):
 
 
 def catalog_keyboard():
-    categories = get_categories()
+    categories = get_categories_for_catalog()
 
     buttons = [
-        pbutton(name, f"cat_{category_id}")
-        for category_id, name in categories
+        pbutton(
+            text=name,
+            callback_data=f"cat_{category_id}",
+            emoji_id=emoji_id
+        )
+        for category_id, name, emoji_id in categories
     ]
 
     keyboard = make_two_columns(buttons)
-    keyboard.append([pbutton("Открыть корзину", "cart")])
+    keyboard.append([button("Открыть корзину", "cart")])
 
     return InlineKeyboardMarkup(keyboard)
 
@@ -584,6 +656,12 @@ def admin_keyboard():
         [button("📱 Редактор моделей", "admin_edit_models")],
         [button("🎨 Редактор вариантов", "admin_catalog")],
         [button("🚪 Выйти из админ-панели", "admin_logout")],
+    ])
+
+
+def cancel_admin_keyboard():
+    return InlineKeyboardMarkup([
+        [button("⬅️ Назад в админ-панель", "admin_cancel")]
     ])
 
 
@@ -676,6 +754,29 @@ def admin_edit_variants_keyboard(page=0):
 
 
 # =========================
+# ADMIN STATE HELPERS
+# =========================
+
+def clear_admin_temp_data(context):
+    keys_to_clear = [
+        "new_model_category_id",
+        "new_model_name",
+        "new_variant_model_id",
+        "new_variant_color",
+        "new_variant_memory",
+        "edit_category_id",
+        "edit_model_id",
+        "edit_variant_id",
+        "admin_login_input",
+    ]
+
+    for key in keys_to_clear:
+        context.user_data.pop(key, None)
+
+    context.user_data["admin_state"] = None
+
+
+# =========================
 # JOBS
 # =========================
 
@@ -760,6 +861,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     admin_state = context.user_data.get("admin_state")
 
+    if admin_state and text.lower() in ["назад", "отмена", "/cancel"]:
+        clear_admin_temp_data(context)
+
+        await update.message.reply_text(
+            ADMIN_PANEL_TEXT,
+            reply_markup=admin_keyboard()
+        )
+        return
+
     if admin_state == "wait_login":
         context.user_data["admin_login_input"] = text
 
@@ -798,20 +908,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Нет доступа.")
             return
 
-        if text == "📦 Каталог":
+        category_name, emoji_id = extract_text_and_custom_emoji(update.message)
+
+        if category_name == "📦 Каталог":
             await update.message.reply_text(
-                "Сейчас вы добавляете категорию.\n\nВведите название категории текстом, например: iPhone"
+                "Сейчас вы добавляете категорию.\n\nВведите название категории текстом, например: iPhone",
+                reply_markup=cancel_admin_keyboard()
             )
             return
 
-        category_id = add_category(text)
+        if not category_name:
+            await update.message.reply_text(
+                "Название категории пустое. Отправьте premium emoji вместе с текстом, например: [emoji] iPhone",
+                reply_markup=cancel_admin_keyboard()
+            )
+            return
+
+        category_id = add_category(category_name, emoji_id)
         context.user_data["admin_state"] = None
 
         await update.message.reply_text(
             (
                 "Категория добавлена ✅\n\n"
                 f"ID: {category_id}\n"
-                f"Название: {text}"
+                f"Название: {category_name}\n"
+                f"Premium emoji: {'есть' if emoji_id else 'нет'}"
             ),
             reply_markup=admin_keyboard()
         )
@@ -829,10 +950,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Ошибка. Категория не найдена.", reply_markup=admin_keyboard())
             return
 
-        try:
-            rename_category(category_id, text)
+        category_name, emoji_id = extract_text_and_custom_emoji(update.message)
+
+        if not category_name:
             await update.message.reply_text(
-                f"Категория переименована ✅\n\nНовое название: {text}",
+                "Название категории пустое. Отправьте premium emoji вместе с текстом, например: [emoji] iPhone",
+                reply_markup=cancel_admin_keyboard()
+            )
+            return
+
+        try:
+            rename_category(category_id, category_name, emoji_id)
+            await update.message.reply_text(
+                (
+                    "Категория переименована ✅\n\n"
+                    f"Новое название: {category_name}\n"
+                    f"Premium emoji: {'есть' if emoji_id else 'нет'}"
+                ),
                 reply_markup=admin_keyboard()
             )
         except Exception as e:
@@ -852,7 +986,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if text == "📦 Каталог":
             await update.message.reply_text(
-                "Сейчас вы добавляете модель.\n\nВведите название модели текстом, например: iPhone 17 Pro"
+                "Сейчас вы добавляете модель.\n\nВведите название модели текстом, например: iPhone 17 Pro",
+                reply_markup=cancel_admin_keyboard()
             )
             return
 
@@ -864,7 +999,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Введите описание модели.\n\n"
                 "Например: Флагманская модель Apple.\n"
                 "Если описание не нужно, напишите -"
-            )
+            ),
+            reply_markup=cancel_admin_keyboard()
         )
         return
 
@@ -955,7 +1091,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if text == "📦 Каталог":
             await update.message.reply_text(
-                "Сейчас вы добавляете цвет.\n\nВведите цвет текстом, например: Black"
+                "Сейчас вы добавляете цвет.\n\nВведите цвет текстом, например: Black",
+                reply_markup=cancel_admin_keyboard()
             )
             return
 
@@ -963,7 +1100,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["admin_state"] = "add_variant_memory"
 
         await update.message.reply_text(
-            "Введите память.\n\nНапример: 128GB, 256GB, 512GB"
+            "Введите память.\n\nНапример: 128GB, 256GB, 512GB",
+            reply_markup=cancel_admin_keyboard()
         )
         return
 
@@ -974,7 +1112,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if text == "📦 Каталог":
             await update.message.reply_text(
-                "Сейчас вы добавляете память.\n\nВведите память текстом, например: 256GB"
+                "Сейчас вы добавляете память.\n\nВведите память текстом, например: 256GB",
+                reply_markup=cancel_admin_keyboard()
             )
             return
 
@@ -982,7 +1121,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["admin_state"] = "add_variant_price"
 
         await update.message.reply_text(
-            "Введите цену.\n\nНапример: 999$, 120 000 ₽, 450 000 ₸"
+            "Введите цену.\n\nНапример: 999$, 120 000 ₽, 450 000 ₸",
+            reply_markup=cancel_admin_keyboard()
         )
         return
 
@@ -993,7 +1133,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if text == "📦 Каталог":
             await update.message.reply_text(
-                "Сейчас вы добавляете цену.\n\nВведите цену текстом, например: 999$"
+                "Сейчас вы добавляете цену.\n\nВведите цену текстом, например: 999$",
+                reply_markup=cancel_admin_keyboard()
             )
             return
 
@@ -1150,13 +1291,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         models = get_models_by_category(category_id)
 
         buttons = [
-            pbutton(name, f"model_{model_id}")
+            button(name, f"model_{model_id}")
             for model_id, name, description in models
         ]
 
         keyboard = make_two_columns(buttons)
-        keyboard.append([pbutton("Назад в каталог", "catalog")])
-        keyboard.append([pbutton("Открыть корзину", "cart")])
+        keyboard.append([button("Назад в каталог", "catalog")])
+        keyboard.append([button("Открыть корзину", "cart")])
 
         if not models:
             text_msg = f"Категория: {category[1]}\n\nМоделей пока нет."
@@ -1183,14 +1324,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         variants = get_variants_by_model(model_id)
 
         buttons = [
-            pbutton(f"{color} / {memory}", f"variant_{variant_id}")
+            button(f"{color} / {memory}", f"variant_{variant_id}")
             for variant_id, color, memory, price in variants
         ]
 
         keyboard = make_two_columns(buttons)
-        keyboard.append([pbutton("Назад к моделям", f"cat_{category_id}")])
-        keyboard.append([pbutton("Открыть корзину", "cart")])
-        keyboard.append([pbutton("Вернуться в каталог", "catalog")])
+        keyboard.append([button("Назад к моделям", f"cat_{category_id}")])
+        keyboard.append([button("Открыть корзину", "cart")])
+        keyboard.append([button("Вернуться в каталог", "catalog")])
 
         text_msg = f"{model_name}\n\nКатегория: {category_name}\n"
 
@@ -1239,10 +1380,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         keyboard = [
-            [pbutton("Добавить в корзину", f"add_{variant_id}")],
-            [pbutton("Назад к вариантам", f"model_{model_id}")],
-            [pbutton("Открыть корзину", "cart")],
-            [pbutton("Вернуться в каталог", "catalog")],
+            [button("Добавить в корзину", f"add_{variant_id}")],
+            [button("Назад к вариантам", f"model_{model_id}")],
+            [button("Открыть корзину", "cart")],
+            [button("Вернуться в каталог", "catalog")],
         ]
 
         await query.edit_message_text(
@@ -1280,9 +1421,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Можно перейти в корзину или вернуться в каталог."
             ),
             reply_markup=InlineKeyboardMarkup([
-                [pbutton("Перейти в корзину", "cart")],
-                [pbutton("Назад к вариантам", f"model_{model_id}")],
-                [pbutton("Вернуться в каталог", "catalog")],
+                [button("Перейти в корзину", "cart")],
+                [button("Назад к вариантам", f"model_{model_id}")],
+                [button("Вернуться в каталог", "catalog")],
             ])
         )
 
@@ -1291,7 +1432,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 text="Корзина Netizen\n\nКорзина пока пустая.",
                 reply_markup=InlineKeyboardMarkup([
-                    [pbutton("Вернуться в каталог", "catalog")]
+                    [button("Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -1325,9 +1466,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             text=text_msg,
             reply_markup=InlineKeyboardMarkup([
-                [pbutton("Оформить заказ", "checkout")],
-                [pbutton("Очистить корзину", "clear_cart")],
-                [pbutton("Вернуться в каталог", "catalog")],
+                [button("Оформить заказ", "checkout")],
+                [button("Очистить корзину", "clear_cart")],
+                [button("Вернуться в каталог", "catalog")],
             ])
         )
 
@@ -1340,7 +1481,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Вы можете вернуться в каталог и выбрать новые товары."
             ),
             reply_markup=InlineKeyboardMarkup([
-                [pbutton("Вернуться в каталог", "catalog")]
+                [button("Вернуться в каталог", "catalog")]
             ])
         )
 
@@ -1404,7 +1545,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Менеджер скоро свяжется с вами."
             ),
             reply_markup=InlineKeyboardMarkup([
-                [pbutton("Вернуться в каталог", "catalog")]
+                [button("Вернуться в каталог", "catalog")]
             ])
         )
 
@@ -1416,7 +1557,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         context.user_data["admin_state"] = "add_category_name"
-        await query.edit_message_text("➕ Добавление категории\n\nВведите название новой категории:")
+        await query.edit_message_text(
+            "➕ Добавление категории\n\nВведите название новой категории.\n\nМожно отправить premium emoji + текст.",
+            reply_markup=cancel_admin_keyboard()
+        )
 
     elif data == "admin_add_model":
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1459,7 +1603,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["new_model_category_id"] = category_id
         context.user_data["admin_state"] = "add_model_name"
 
-        await query.edit_message_text("Введите название модели.\n\nНапример: iPhone 17 Pro")
+        await query.edit_message_text(
+            "Введите название модели.\n\nНапример: iPhone 17 Pro",
+            reply_markup=cancel_admin_keyboard()
+        )
 
     elif data == "admin_add_variant":
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1508,7 +1655,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["new_variant_model_id"] = model_id
         context.user_data["admin_state"] = "add_variant_color"
 
-        await query.edit_message_text("Введите цвет.\n\nНапример: Black, White, Blue, Natural Titanium")
+        await query.edit_message_text(
+            "Введите цвет.\n\nНапример: Black, White, Blue, Natural Titanium",
+            reply_markup=cancel_admin_keyboard()
+        )
 
     # ===== ADMIN EDIT CATEGORIES =====
 
@@ -1579,7 +1729,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_category_id"] = category_id
         context.user_data["admin_state"] = "rename_category"
 
-        await query.edit_message_text("Введите новое название категории:")
+        await query.edit_message_text(
+            "Введите новое название категории.\n\nМожно отправить premium emoji + текст.",
+            reply_markup=cancel_admin_keyboard()
+        )
 
     elif data.startswith("admin_delete_category_"):
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1671,7 +1824,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_model_id"] = model_id
         context.user_data["admin_state"] = "rename_model"
 
-        await query.edit_message_text("Введите новое название модели:")
+        await query.edit_message_text(
+            "Введите новое название модели:",
+            reply_markup=cancel_admin_keyboard()
+        )
 
     elif data.startswith("admin_model_desc_"):
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1683,7 +1839,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["admin_state"] = "edit_model_description"
 
         await query.edit_message_text(
-            "Введите новое описание модели.\n\nЕсли описание нужно очистить, отправьте -"
+            "Введите новое описание модели.\n\nЕсли описание нужно очистить, отправьте -",
+            reply_markup=cancel_admin_keyboard()
         )
 
     elif data.startswith("admin_delete_model_"):
@@ -1787,7 +1944,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_variant_id"] = variant_id
         context.user_data["admin_state"] = "change_variant_color"
 
-        await query.edit_message_text("Введите новый цвет варианта:")
+        await query.edit_message_text(
+            "Введите новый цвет варианта:",
+            reply_markup=cancel_admin_keyboard()
+        )
 
     elif data.startswith("admin_variant_memory_"):
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1798,7 +1958,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_variant_id"] = variant_id
         context.user_data["admin_state"] = "change_variant_memory"
 
-        await query.edit_message_text("Введите новое значение памяти:")
+        await query.edit_message_text(
+            "Введите новое значение памяти:",
+            reply_markup=cancel_admin_keyboard()
+        )
 
     elif data.startswith("admin_variant_price_"):
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1809,7 +1972,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["edit_variant_id"] = variant_id
         context.user_data["admin_state"] = "change_variant_price"
 
-        await query.edit_message_text("Введите новую цену варианта:")
+        await query.edit_message_text(
+            "Введите новую цену варианта:",
+            reply_markup=cancel_admin_keyboard()
+        )
 
     elif data.startswith("admin_variant_delete_"):
         if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
@@ -1821,6 +1987,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.edit_message_text(
             text="Вариант удалён ✅\n\nОн больше не будет отображаться в каталоге.",
+            reply_markup=admin_keyboard()
+        )
+
+    elif data == "admin_cancel":
+        if not is_admin_user(query.from_user.id) or not is_admin_logged(context):
+            await query.edit_message_text("Нет доступа.")
+            return
+
+        clear_admin_temp_data(context)
+
+        await query.edit_message_text(
+            text=ADMIN_PANEL_TEXT,
             reply_markup=admin_keyboard()
         )
 
@@ -1836,7 +2014,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "admin_logout":
         context.user_data["admin_logged"] = False
-        context.user_data["admin_state"] = None
+        clear_admin_temp_data(context)
 
         await query.edit_message_text("Вы вышли из админ-панели.")
 
