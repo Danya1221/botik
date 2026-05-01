@@ -1126,7 +1126,6 @@ async def show_product_card(query, product):
     keyboard = InlineKeyboardMarkup([
         [button("Купить", f"buy_{product_id}")],
         [button("Добавить в корзину", f"addcart_{product_id}")],
-        [button("🛒 Корзина", "cart")],
         [button("Вернуться обратно", f"type_{type_id}")],
         [button("Вернуться в каталог", "catalog")],
     ])
