@@ -2734,7 +2734,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         products = get_products_by_type(type_id)
 
         buttons = [
-            button(product_name, f"product_{product_id}")
+            pbutton(product_name, f"product_{product_id}", emoji_id=emoji_id)
             for product_id, product_name, product_description, photo_file_id, price, emoji_id in products
         ]
 
