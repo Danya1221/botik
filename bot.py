@@ -950,15 +950,16 @@ def catalog_keyboard():
 
     buttons = [
         pbutton(
-            text=name,
+            text=f"📁 {name}",
             callback_data=f"cat_{category_id}",
-            emoji_id=emoji_id
+            emoji_id=emoji_id,
+            style="primary"
         )
         for category_id, name, emoji_id in categories
     ]
 
     keyboard = make_two_columns(buttons)
-    keyboard.append([primary_button("🛒 Корзина", "cart")])
+    keyboard.append([primary_primary_primary_button("🛒 Корзина", "cart")])
 
     return InlineKeyboardMarkup(keyboard)
 
@@ -1232,10 +1233,17 @@ def build_cart_lines(context, product_ids=None):
 
 
 def cart_markup(context):
+    return InlineKeyboardMarkup([
+        [success_button("✅ Оформить заказ", "checkout")],
+        [danger_button("❌ Удалить товар", "cart_delete_menu")],
+        [danger_button("🗑 Очистить корзину", "clear_cart")],
+        [primary_button("📦 Вернуться в каталог", "catalog")],
+    ])
+
+
+def cart_delete_markup(context):
     cart = get_cart(context)
-    keyboard = [
-        [success_button("Оформить заказ", "checkout")],
-    ]
+    keyboard = []
 
     for index, product_id in enumerate(cart):
         product = get_product(product_id)
@@ -1244,81 +1252,13 @@ def cart_markup(context):
             continue
 
         keyboard.append([
-            danger_button(f"Удалить #{product[0]} — {product[1]}", f"remove_cart_{index}")
+            danger_button(f"❌ Удалить #{product[0]} — {product[1]}", f"remove_cart_{index}")
         ])
 
-    keyboard.append([danger_button("Очистить корзину", "clear_cart")])
-    keyboard.append([primary_button("Вернуться в каталог", "catalog")])
+    keyboard.append([default_button("↩️ Назад в корзину", "cart")])
+    keyboard.append([primary_button("📦 Вернуться в каталог", "catalog")])
 
     return InlineKeyboardMarkup(keyboard)
-
-
-async def safe_show_text(query, text, reply_markup=None):
-    try:
-        await query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup
-        )
-    except Exception:
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-
-        await query.message.chat.send_message(
-            text=text,
-            reply_markup=reply_markup
-        )
-
-
-async def show_product_card(query, product):
-    (
-        product_id,
-        product_name,
-        description,
-        photo_file_id,
-        price,
-        type_id,
-        type_name,
-        model_id,
-        model_name,
-        category_id,
-        category_name
-    ) = product
-
-    caption = (
-        f"{product_name}\n\n"
-        f"ID товара: #{product_id}\n"
-        f"Цена: {price}\n"
-    )
-
-    if description:
-        caption += f"\nОписание:\n{description}\n"
-
-    keyboard = InlineKeyboardMarkup([
-        [success_button("Оформить заказ", f"buy_{product_id}")],
-        [primary_button("Добавить в корзину", f"addcart_{product_id}")],
-        [default_button("Вернуться обратно", f"type_{type_id}")],
-        [primary_button("Вернуться в каталог", "catalog")],
-    ])
-
-    if photo_file_id:
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-
-        await query.message.chat.send_photo(
-            photo=photo_file_id,
-            caption=caption,
-            reply_markup=keyboard
-        )
-    else:
-        await safe_show_text(
-            query,
-            caption,
-            keyboard
-        )
 
 
 # =========================
@@ -2453,13 +2393,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         models = get_models_by_category(category_id)
 
         buttons = [
-            pbutton(name, f"model_{model_id}", emoji_id=emoji_id)
+            pbutton(f"📱 {name}", f"model_{model_id}", emoji_id=emoji_id, style="primary")
             for model_id, name, description, emoji_id in models
         ]
 
         keyboard = make_two_columns(buttons)
-        keyboard.append([button("Назад в каталог", "catalog")])
-        keyboard.append([primary_button("🛒 Корзина", "cart")])
+        keyboard.append([default_button("↩️ Назад в каталог", "catalog")])
+        keyboard.append([primary_primary_primary_button("🛒 Корзина", "cart")])
 
         if not models:
             text_msg = f"Категория: {category[1]}\n\nМоделей пока нет."
@@ -2480,13 +2420,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         types = get_types_by_model(model_id)
 
         buttons = [
-            pbutton(type_name, f"type_{type_id}", emoji_id=emoji_id)
+            pbutton(f"🔹 {type_name}", f"type_{type_id}", emoji_id=emoji_id, style="primary")
             for type_id, type_name, type_description, emoji_id in types
         ]
 
         keyboard = make_two_columns(buttons)
-        keyboard.append([button("Назад к категориям", f"cat_{category_id}")])
-        keyboard.append([primary_button("Вернуться в каталог", "catalog")])
+        keyboard.append([default_button("↩️ Назад к категориям", f"cat_{category_id}")])
+        keyboard.append([primary_primary_button("📦 Вернуться в каталог", "catalog")])
 
         text_msg = f"{model_name}\n\nКатегория: {category_name}\n"
 
@@ -2521,13 +2461,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         products = get_products_by_type(type_id)
 
         buttons = [
-            pbutton(product_name, f"product_{product_id}", emoji_id=emoji_id)
+            pbutton(f"📦 {product_name}", f"product_{product_id}", emoji_id=emoji_id, style="primary")
             for product_id, product_name, product_description, photo_file_id, price, emoji_id in products
         ]
 
         keyboard = make_two_columns(buttons)
-        keyboard.append([button("Назад к модели", f"model_{model_id}")])
-        keyboard.append([primary_button("Вернуться в каталог", "catalog")])
+        keyboard.append([default_button("↩️ Назад к модели", f"model_{model_id}")])
+        keyboard.append([primary_primary_button("📦 Вернуться в каталог", "catalog")])
 
         text_msg = (
             f"{type_name}\n\n"
@@ -2573,8 +2513,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Цена: {product[4]}"
             ),
             InlineKeyboardMarkup([
-                [primary_button("🛒 Корзина", "cart")],
-                [primary_button("Продолжить покупки", "catalog")],
+                [primary_primary_primary_button("🛒 Корзина", "cart")],
+                [primary_primary_button("📦 Продолжить покупки", "catalog")],
             ])
         )
 
@@ -2607,7 +2547,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Корзина Netizen\n\nКорзина пока пустая.",
                 InlineKeyboardMarkup([
-                    [primary_button("Вернуться в каталог", "catalog")]
+                    [primary_primary_button("📦 Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -2624,6 +2564,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cart_markup(context)
         )
 
+    elif data == "cart_delete_menu":
+        lines, valid_product_ids = build_cart_lines(context)
+
+        if not valid_product_ids:
+            await safe_show_text(
+                query,
+                "Корзина Netizen\n\nКорзина пока пустая.",
+                InlineKeyboardMarkup([
+                    [primary_primary_button("📦 Вернуться в каталог", "catalog")]
+                ])
+            )
+            return
+
+        text_msg = (
+            "Удаление товара из корзины\n\n"
+            "Выберите позицию, которую нужно убрать:\n\n"
+            + "\n".join(lines)
+        )
+
+        await safe_show_text(
+            query,
+            text_msg,
+            cart_delete_markup(context)
+        )
+
     elif data.startswith("remove_cart_"):
         try:
             item_index = int(data.replace("remove_cart_", ""))
@@ -2638,7 +2603,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Позиция уже удалена или не найдена.",
                 InlineKeyboardMarkup([
-                    [primary_button("Вернуться в каталог", "catalog")]
+                    [primary_primary_button("📦 Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -2650,7 +2615,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Корзина Netizen\n\nКорзина теперь пустая.",
                 InlineKeyboardMarkup([
-                    [primary_button("Вернуться в каталог", "catalog")]
+                    [primary_primary_button("📦 Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -2674,7 +2639,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query,
             "Корзина очищена ✅",
             InlineKeyboardMarkup([
-                [primary_button("Вернуться в каталог", "catalog")]
+                [primary_primary_button("📦 Вернуться в каталог", "catalog")]
             ])
         )
 
@@ -2686,7 +2651,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Корзина пустая. Сначала добавьте товар.",
                 InlineKeyboardMarkup([
-                    [primary_button("Вернуться в каталог", "catalog")]
+                    [primary_primary_button("📦 Вернуться в каталог", "catalog")]
                 ])
             )
             return
