@@ -2152,7 +2152,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = make_two_columns(buttons)
         keyboard.append([button("Назад в каталог", "catalog")])
-        keyboard.append([button("🛒 Корзина", "cart")])
 
         if not models:
             text_msg = f"Категория: {category[1]}\n\nМоделей пока нет."
