@@ -27,6 +27,19 @@ ADMIN_PAGE_SIZE = 12
 USE_PREMIUM_BUTTON_EMOJI = True
 ORDER_SUCCESS_STICKER = os.getenv("ORDER_SUCCESS_STICKER", "").strip()
 
+# Невидимая строка для расширения пузыря сообщений.
+# Если нужно шире/уже — меняй число 30.
+WIDE_MESSAGE_PAD = "⠀" * 30
+
+
+def wide_text(text):
+    if not text:
+        return text
+
+    # Добавляем невидимую строку в конец.
+    # Так пузырь становится шире, а сверху не появляется пустой отступ.
+    return f"{text}\n{WIDE_MESSAGE_PAD}"
+
 ADMIN_PANEL_TEXT = (
     "⚙️ Админ-панель Netizen\n\n"
     "Выберите действие для управления каталогом:"
@@ -1358,6 +1371,8 @@ def cart_delete_markup(context):
 
 
 async def safe_show_text(query, text, reply_markup=None):
+    text = wide_text(text)
+
     try:
         await query.edit_message_text(
             text=text,
@@ -1562,7 +1577,7 @@ async def send_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     message = await update.message.reply_text(
-        CATALOG_TEXT,
+        wide_text(CATALOG_TEXT),
         reply_markup=catalog_keyboard()
     )
 
@@ -1895,7 +1910,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clear_order_data(context)
 
         await update.message.reply_text(
-            pretty_text,
+            wide_text(pretty_text),
             parse_mode=ParseMode.HTML,
             reply_markup=reply_menu
         )
@@ -2572,7 +2587,7 @@ async def send_cart_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not valid_product_ids:
         await update.message.reply_text(
-            "Корзина Netizen\n\nКорзина пока пустая.",
+            wide_text("Корзина Netizen\n\nКорзина пока пустая."),
             reply_markup=reply_menu
         )
         return
