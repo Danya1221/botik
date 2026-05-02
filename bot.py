@@ -1,4 +1,5 @@
 import os
+import random
 import re
 from datetime import datetime
 
@@ -9,6 +10,7 @@ from telegram import (
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
 )
+from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -22,6 +24,7 @@ from telegram.ext import (
 CATALOG_LIFETIME_SECONDS = 24 * 60 * 60
 ADMIN_PAGE_SIZE = 12
 USE_PREMIUM_BUTTON_EMOJI = True
+ORDER_SUCCESS_STICKER = os.getenv("ORDER_SUCCESS_STICKER", "").strip()
 
 ADMIN_PANEL_TEXT = (
     "⚙️ Админ-панель Netizen\n\n"
@@ -123,15 +126,24 @@ def extract_text_and_custom_emoji(message):
 def normalize_ru_phone(raw_phone):
     digits = re.sub(r"\D", "", raw_phone or "")
 
-    # Принимаем +7 9XX XXX XX XX и 7 9XX XXX XX XX,
-    # но сохраняем в нужном виде через 8.
-    if len(digits) == 11 and digits.startswith("79"):
+    # Принимаем:
+    # 8 9XX XXX XX XX
+    # 8 8XX XXX XX XX
+    # +7 9XX XXX XX XX
+    # +7 8XX XXX XX XX
+    # 7 9XX XXX XX XX
+    # 7 8XX XXX XX XX
+    if len(digits) == 11 and digits.startswith("7"):
         digits = "8" + digits[1:]
 
     if len(digits) != 11:
         return None
 
-    if not digits.startswith("89"):
+    if not digits.startswith("8"):
+        return None
+
+    # После 8 первая цифра кода может быть 9 или 8.
+    if digits[1] not in ["9", "8"]:
         return None
 
     return f"{digits[0]} {digits[1:4]} {digits[4:7]} {digits[7:9]} {digits[9:11]}"
@@ -159,6 +171,47 @@ def address_has_city(address):
         return True
 
     return False
+
+
+# =========================
+# ORDER BEAUTY
+# =========================
+
+def generate_order_number():
+    return random.randint(100000, 999999)
+
+
+def build_pretty_order_text(order_number, order_name, order_phone, order_address, lines):
+    items_text = "\n".join(lines)
+
+    return (
+        "━━━━━━━━━━━━━━━━━━\n"
+        "✅ <b>ЗАКАЗ ОФОРМЛЕН</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"🧾 <b>Номер заказа:</b> <code>#{order_number}</code>\n"
+        f"👤 <b>ФИО:</b> {order_name}\n"
+        f"📞 <b>Телефон:</b> {order_phone}\n"
+        f"📍 <b>Адрес:</b> {order_address}\n\n"
+        f"📦 <b>Состав заказа:</b>\n{items_text}\n\n"
+        "🙏 <b>Спасибо за покупку!</b>\n"
+        "Менеджер скоро свяжется с вами для подтверждения заказа."
+    )
+
+
+def build_admin_order_text(order_number, order_name, order_phone, order_address, lines, username, user_id):
+    items_text = "\n".join(lines)
+
+    return (
+        "🆕 Новый заказ Netizen!\n\n"
+        f"Номер заказа: #{order_number}\n\n"
+        f"Товары:\n{items_text}\n\n"
+        f"Имя клиента: {order_name}\n"
+        f"Телефон: {order_phone}\n"
+        f"Адрес: {order_address}\n\n"
+        f"Telegram: {username or 'username не указан'}\n"
+        f"Telegram ID: {user_id}\n\n"
+        f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+    )
 
 
 # =========================
@@ -1449,9 +1502,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (
                     "Номер указан неверно.\n\n"
                     "Формат должен быть такой:\n"
-                    "8 9XX XXX XX XX\n\n"
-                    "Можно писать без пробелов, со скобками или дефисами.\n"
-                    "Пример: 89023911564"
+                    "+7 977 777 77 77\n"
+                    "или\n"
+                    "8 977 777 77 77\n\n"
+                    "Можно писать без пробелов, со скобками или дефисами."
                 )
             )
             return
@@ -1463,7 +1517,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (
                 "Введите адрес доставки.\n\n"
                 "Обязательно укажите город.\n"
-                "Пример: г. Москва, Парковый 1"
+                "Пример: г. Москва, ул. Примерная 1"
             )
         )
         return
@@ -1478,9 +1532,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (
                     "В адресе нужно указать город.\n\n"
                     "Пример:\n"
-                    "г. Москва, Парковый 1\n\n"
+                    "г. Москва, ул. Примерная 1\n\n"
                     "Или:\n"
-                    "Москва, Парковый 1"
+                    "Москва, ул. Примерная 1"
                 )
             )
             return
@@ -1503,7 +1557,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("ADMIN_ID не настроен.")
             return
 
-        items_text = "\n".join(lines)
+        order_number = generate_order_number()
 
         try:
             for product_id in valid_product_ids:
@@ -1523,16 +1577,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     price=product[4]
                 )
 
-            order_text = (
-            "🆕 Новый заказ Netizen!\n\n"
-            f"Товары:\n{items_text}\n\n"
-            f"Имя клиента: {order_name}\n"
-            f"Телефон: {order_phone}\n"
-            f"Адрес: {order_address}\n\n"
-            f"Telegram: {username or 'username не указан'}\n"
-            f"Telegram ID: {user.id}\n\n"
-            f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
-        )
+            order_text = build_admin_order_text(
+                order_number=order_number,
+                order_name=order_name,
+                order_phone=order_phone,
+                order_address=order_address,
+                lines=lines,
+                username=username,
+                user_id=user.id
+            )
 
             await context.bot.send_message(
                 chat_id=admin_id,
@@ -1545,6 +1598,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        pretty_text = build_pretty_order_text(
+            order_number=order_number,
+            order_name=order_name,
+            order_phone=order_phone,
+            order_address=order_address,
+            lines=lines
+        )
+
+        if ORDER_SUCCESS_STICKER:
+            try:
+                await context.bot.send_sticker(
+                    chat_id=update.effective_chat.id,
+                    sticker=ORDER_SUCCESS_STICKER
+                )
+            except Exception:
+                pass
+
         checkout_source = context.user_data.get("checkout_source")
 
         if checkout_source == "cart":
@@ -1553,7 +1623,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clear_order_data(context)
 
         await update.message.reply_text(
-            "Заказ оформлен ✅\n\nМенеджер скоро свяжется с вами.",
+            pretty_text,
+            parse_mode=ParseMode.HTML,
             reply_markup=reply_menu
         )
         return
