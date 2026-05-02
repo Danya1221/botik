@@ -341,6 +341,43 @@ def init_db():
             """)
 
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS product_reviews (
+                    id SERIAL PRIMARY KEY,
+                    product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
+                    user_id BIGINT,
+                    username TEXT,
+                    full_name TEXT,
+                    rating INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            cur.execute("ALTER TABLE product_reviews ADD COLUMN IF NOT EXISTS username TEXT;")
+            cur.execute("ALTER TABLE product_reviews ADD COLUMN IF NOT EXISTS full_name TEXT;")
+            cur.execute("ALTER TABLE product_reviews ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';")
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS product_questions (
+                    id SERIAL PRIMARY KEY,
+                    product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
+                    user_id BIGINT,
+                    username TEXT,
+                    full_name TEXT,
+                    question TEXT NOT NULL,
+                    answer TEXT,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    answered_at TIMESTAMP
+                );
+            """)
+            cur.execute("ALTER TABLE product_questions ADD COLUMN IF NOT EXISTS username TEXT;")
+            cur.execute("ALTER TABLE product_questions ADD COLUMN IF NOT EXISTS full_name TEXT;")
+            cur.execute("ALTER TABLE product_questions ADD COLUMN IF NOT EXISTS answer TEXT;")
+            cur.execute("ALTER TABLE product_questions ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';")
+            cur.execute("ALTER TABLE product_questions ADD COLUMN IF NOT EXISTS answered_at TIMESTAMP;")
+
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS admins (
                     id SERIAL PRIMARY KEY,
                     telegram_id BIGINT UNIQUE NOT NULL,
@@ -764,6 +801,115 @@ def delete_product(product_id):
 
 
 # =========================
+# REVIEWS / QUESTIONS DB
+# =========================
+
+def create_review(product_id, user_id, username, full_name, rating, text):
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO product_reviews
+                (product_id, user_id, username, full_name, rating, text, status)
+                VALUES (%s, %s, %s, %s, %s, %s, 'pending')
+                RETURNING id;
+            """, (product_id, user_id, username, full_name, rating, text))
+            return cur.fetchone()[0]
+
+
+def get_review(review_id):
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, product_id, user_id, username, full_name, rating, text, status
+                FROM product_reviews
+                WHERE id = %s;
+            """, (review_id,))
+            return cur.fetchone()
+
+
+def update_review_status(review_id, status):
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE product_reviews
+                SET status = %s
+                WHERE id = %s;
+            """, (status, review_id))
+
+
+def get_approved_reviews(product_id, limit=10):
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, rating, text, full_name, created_at
+                FROM product_reviews
+                WHERE product_id = %s AND status = 'approved'
+                ORDER BY created_at DESC
+                LIMIT %s;
+            """, (product_id, limit))
+            return cur.fetchall()
+
+
+def get_review_stats(product_id):
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*), COALESCE(ROUND(AVG(rating)::numeric, 1), 0)
+                FROM product_reviews
+                WHERE product_id = %s AND status = 'approved';
+            """, (product_id,))
+            return cur.fetchone()
+
+
+def create_question(product_id, user_id, username, full_name, question):
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO product_questions
+                (product_id, user_id, username, full_name, question, status)
+                VALUES (%s, %s, %s, %s, %s, 'pending')
+                RETURNING id;
+            """, (product_id, user_id, username, full_name, question))
+            return cur.fetchone()[0]
+
+
+def get_question(question_id):
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, product_id, user_id, username, full_name, question, answer, status
+                FROM product_questions
+                WHERE id = %s;
+            """, (question_id,))
+            return cur.fetchone()
+
+
+def answer_question(question_id, answer):
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE product_questions
+                SET answer = %s,
+                    status = 'answered',
+                    answered_at = NOW()
+                WHERE id = %s;
+            """, (answer, question_id))
+
+
+def get_answered_questions(product_id, limit=10):
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, question, answer, full_name, created_at
+                FROM product_questions
+                WHERE product_id = %s AND status = 'answered'
+                ORDER BY answered_at DESC NULLS LAST, created_at DESC
+                LIMIT %s;
+            """, (product_id, limit))
+            return cur.fetchall()
+
+
+# =========================
 # ORDERS / ADMINS
 # =========================
 
@@ -1152,6 +1298,7 @@ def clear_admin_temp_data(context):
         "admin_login_input",
         "new_admin_id_input",
         "delete_admin_id_input",
+        "answer_question_id",
     ]
 
     for key in keys_to_clear:
@@ -1421,6 +1568,11 @@ def product_card_keyboard(product_id, type_id, qty):
             default_button(str(qty), f"qty_show_{product_id}"),
             default_button("+", f"qty_plus_{product_id}"),
         ],
+        [
+            default_button("⭐ Отзывы", f"product_reviews_{product_id}"),
+            default_button("❔ Вопросы", f"product_questions_{product_id}"),
+        ],
+        [primary_button("❓ Задать вопрос", f"ask_question_{product_id}")],
         [success_button("✅ Оформить заказ", f"buy_{product_id}")],
         [primary_button("🛒 Добавить в корзину", f"addcart_{product_id}")],
         [danger_button("↩️ Вернуться обратно", f"type_{type_id}")],
@@ -1643,6 +1795,156 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     admin_state = context.user_data.get("admin_state")
     order_state = context.user_data.get("order_state")
+    review_state = context.user_data.get("review_state")
+    question_state = context.user_data.get("question_state")
+
+    if review_state and text in ["❌ Отменить оформление", "/cancel", "отмена", "Отмена"]:
+        context.user_data["review_state"] = None
+        context.user_data.pop("review_product_id", None)
+        context.user_data.pop("review_rating", None)
+        await update.message.reply_text("Отзыв отменён.", reply_markup=reply_menu)
+        return
+
+    if question_state and text in ["❌ Отменить оформление", "/cancel", "отмена", "Отмена"]:
+        context.user_data["question_state"] = None
+        context.user_data.pop("question_product_id", None)
+        await update.message.reply_text("Вопрос отменён.", reply_markup=reply_menu)
+        return
+
+    if review_state == "wait_review_text":
+        product_id = context.user_data.get("review_product_id")
+        rating = context.user_data.get("review_rating")
+        product = get_product(product_id)
+
+        if not product or not rating:
+            context.user_data["review_state"] = None
+            await update.message.reply_text("Ошибка отзыва. Попробуйте заново.", reply_markup=reply_menu)
+            return
+
+        review_id = create_review(
+            product_id=product_id,
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            rating=rating,
+            text=text
+        )
+
+        admin_id = get_admin_id()
+        if admin_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=(
+                        "⭐ Новый отзыв на модерацию\n\n"
+                        f"ID отзыва: #{review_id}\n"
+                        f"Товар: #{product[0]} — {product[1]}\n"
+                        f"Оценка: {rating}/5\n"
+                        f"Клиент: {full_name}\n"
+                        f"Telegram: {username or 'username не указан'}\n\n"
+                        f"Текст:\n{text}"
+                    ),
+                    reply_markup=InlineKeyboardMarkup([
+                        [success_button("✅ Опубликовать", f"admin_review_approve_{review_id}")],
+                        [danger_button("❌ Отклонить", f"admin_review_reject_{review_id}")],
+                    ])
+                )
+            except Exception:
+                pass
+
+        context.user_data["review_state"] = None
+        context.user_data.pop("review_product_id", None)
+        context.user_data.pop("review_rating", None)
+
+        await update.message.reply_text(
+            "Спасибо! Отзыв отправлен на модерацию ✅",
+            reply_markup=reply_menu
+        )
+        return
+
+    if question_state == "wait_question_text":
+        product_id = context.user_data.get("question_product_id")
+        product = get_product(product_id)
+
+        if not product:
+            context.user_data["question_state"] = None
+            await update.message.reply_text("Ошибка вопроса. Попробуйте заново.", reply_markup=reply_menu)
+            return
+
+        question_id = create_question(
+            product_id=product_id,
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            question=text
+        )
+
+        admin_id = get_admin_id()
+        if admin_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=(
+                        "❓ Новый вопрос по товару\n\n"
+                        f"ID вопроса: #{question_id}\n"
+                        f"Товар: #{product[0]} — {product[1]}\n"
+                        f"Клиент: {full_name}\n"
+                        f"Telegram: {username or 'username не указан'}\n\n"
+                        f"Вопрос:\n{text}"
+                    ),
+                    reply_markup=InlineKeyboardMarkup([
+                        [primary_button("✍️ Ответить", f"admin_answer_question_{question_id}")],
+                    ])
+                )
+            except Exception:
+                pass
+
+        context.user_data["question_state"] = None
+        context.user_data.pop("question_product_id", None)
+
+        await update.message.reply_text(
+            "Вопрос отправлен ✅\n\nМенеджер ответит вам в ближайшее время.",
+            reply_markup=reply_menu
+        )
+        return
+
+    if admin_state == "answer_question":
+        if not is_admin_user(user_id):
+            await update.message.reply_text("Нет доступа.")
+            return
+
+        question_id = context.user_data.get("answer_question_id")
+        question = get_question(question_id)
+
+        if not question:
+            clear_admin_temp_data(context)
+            await update.message.reply_text("Вопрос не найден.", reply_markup=admin_keyboard())
+            return
+
+        answer_question(question_id, text)
+
+        product = get_product(question[1])
+        try:
+            await context.bot.send_message(
+                chat_id=question[2],
+                text=(
+                    "✅ Ответ на ваш вопрос\n\n"
+                    f"Товар: {product[1] if product else 'товар'}\n\n"
+                    f"Ваш вопрос:\n{question[5]}\n\n"
+                    f"Ответ:\n{text}"
+                )
+            )
+        except Exception:
+            pass
+
+        clear_admin_temp_data(context)
+        context.user_data.pop("answer_question_id", None)
+
+        await update.message.reply_text(
+            "Ответ сохранён и отправлен клиенту ✅",
+            reply_markup=admin_keyboard()
+        )
+        return
 
     if order_state and text in ["❌ Отменить оформление", "/cancel", "отмена", "Отмена"]:
         await cancel_order_flow(update, context)
@@ -2757,6 +3059,202 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text_msg += "\nВыберите товар:"
 
         await safe_show_text(query, text_msg, InlineKeyboardMarkup(keyboard))
+
+    elif data.startswith("product_reviews_"):
+        product_id = int(data.replace("product_reviews_", ""))
+        product = get_product(product_id)
+
+        if not product:
+            await safe_show_text(query, "Товар не найден.")
+            return
+
+        count, avg_rating = get_review_stats(product_id)
+        reviews = get_approved_reviews(product_id)
+
+        text_msg = (
+            f"⭐ Отзывы о товаре\n\n"
+            f"{product[1]}\n\n"
+        )
+
+        if count:
+            text_msg += f"Средняя оценка: {avg_rating}/5 ⭐\nВсего отзывов: {count}\n\n"
+            for review_id, rating, review_text, full_name_text, created_at in reviews:
+                name = full_name_text or "Клиент"
+                text_msg += f"⭐ {rating}/5\n{review_text}\n— {name}\n\n"
+        else:
+            text_msg += "Отзывов пока нет. Будьте первым 🙂\n"
+
+        await safe_show_text(
+            query,
+            text_msg,
+            InlineKeyboardMarkup([
+                [success_button("✍️ Оставить отзыв", f"leave_review_{product_id}")],
+                [danger_button("↩️ Назад к товару", f"product_{product_id}")],
+            ])
+        )
+
+    elif data.startswith("leave_review_"):
+        product_id = int(data.replace("leave_review_", ""))
+        product = get_product(product_id)
+
+        if not product:
+            await safe_show_text(query, "Товар не найден.")
+            return
+
+        await safe_show_text(
+            query,
+            f"Оцените товар:\n\n{product[1]}",
+            InlineKeyboardMarkup([
+                [
+                    default_button("1", f"review_rating_{product_id}_1"),
+                    default_button("2", f"review_rating_{product_id}_2"),
+                    default_button("3", f"review_rating_{product_id}_3"),
+                    default_button("4", f"review_rating_{product_id}_4"),
+                    default_button("5", f"review_rating_{product_id}_5"),
+                ],
+                [danger_button("↩️ Назад к отзывам", f"product_reviews_{product_id}")],
+            ])
+        )
+
+    elif data.startswith("review_rating_"):
+        parts = data.split("_")
+        product_id = int(parts[2])
+        rating = int(parts[3])
+
+        context.user_data["review_state"] = "wait_review_text"
+        context.user_data["review_product_id"] = product_id
+        context.user_data["review_rating"] = rating
+
+        await safe_show_text(
+            query,
+            (
+                f"Оценка: {rating}/5 ⭐\n\n"
+                "Теперь напишите текст отзыва.\n\n"
+                "Если передумали, отправьте /cancel"
+            )
+        )
+
+    elif data.startswith("product_questions_"):
+        product_id = int(data.replace("product_questions_", ""))
+        product = get_product(product_id)
+
+        if not product:
+            await safe_show_text(query, "Товар не найден.")
+            return
+
+        questions = get_answered_questions(product_id)
+
+        text_msg = (
+            f"❔ Вопросы по товару\n\n"
+            f"{product[1]}\n\n"
+        )
+
+        if questions:
+            for question_id, question_text, answer_text, full_name_text, created_at in questions:
+                text_msg += f"Вопрос:\n{question_text}\n\nОтвет:\n{answer_text}\n\n"
+        else:
+            text_msg += "Ответов на вопросы пока нет.\n"
+
+        await safe_show_text(
+            query,
+            text_msg,
+            InlineKeyboardMarkup([
+                [primary_button("❓ Задать вопрос", f"ask_question_{product_id}")],
+                [danger_button("↩️ Назад к товару", f"product_{product_id}")],
+            ])
+        )
+
+    elif data.startswith("ask_question_"):
+        product_id = int(data.replace("ask_question_", ""))
+        product = get_product(product_id)
+
+        if not product:
+            await safe_show_text(query, "Товар не найден.")
+            return
+
+        context.user_data["question_state"] = "wait_question_text"
+        context.user_data["question_product_id"] = product_id
+
+        await safe_show_text(
+            query,
+            (
+                f"❓ Вопрос по товару:\n{product[1]}\n\n"
+                "Напишите ваш вопрос одним сообщением.\n\n"
+                "Если передумали, отправьте /cancel"
+            )
+        )
+
+    elif data.startswith("admin_review_approve_"):
+        if not is_admin_user(query.from_user.id):
+            await safe_show_text(query, "Нет доступа.")
+            return
+
+        review_id = int(data.replace("admin_review_approve_", ""))
+        review = get_review(review_id)
+
+        if not review:
+            await safe_show_text(query, "Отзыв не найден.")
+            return
+
+        update_review_status(review_id, "approved")
+
+        try:
+            await context.bot.send_message(
+                chat_id=review[2],
+                text="Ваш отзыв опубликован ✅"
+            )
+        except Exception:
+            pass
+
+        await safe_show_text(query, f"Отзыв #{review_id} опубликован ✅")
+
+    elif data.startswith("admin_review_reject_"):
+        if not is_admin_user(query.from_user.id):
+            await safe_show_text(query, "Нет доступа.")
+            return
+
+        review_id = int(data.replace("admin_review_reject_", ""))
+        review = get_review(review_id)
+
+        if not review:
+            await safe_show_text(query, "Отзыв не найден.")
+            return
+
+        update_review_status(review_id, "rejected")
+
+        try:
+            await context.bot.send_message(
+                chat_id=review[2],
+                text="Ваш отзыв отклонён."
+            )
+        except Exception:
+            pass
+
+        await safe_show_text(query, f"Отзыв #{review_id} отклонён.")
+
+    elif data.startswith("admin_answer_question_"):
+        if not is_admin_user(query.from_user.id):
+            await safe_show_text(query, "Нет доступа.")
+            return
+
+        question_id = int(data.replace("admin_answer_question_", ""))
+        question = get_question(question_id)
+
+        if not question:
+            await safe_show_text(query, "Вопрос не найден.")
+            return
+
+        context.user_data["admin_state"] = "answer_question"
+        context.user_data["answer_question_id"] = question_id
+
+        await safe_show_text(
+            query,
+            (
+                "Ответ на вопрос\n\n"
+                f"Вопрос #{question_id}:\n{question[5]}\n\n"
+                "Напишите ответ одним сообщением."
+            )
+        )
 
     elif data.startswith("product_"):
         product_id = int(data.replace("product_", ""))
