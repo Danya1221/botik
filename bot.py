@@ -971,7 +971,7 @@ def catalog_keyboard():
     ]
 
     keyboard = make_two_columns(buttons)
-    keyboard.append([primary_button("🛒 Корзина", "cart")])
+    # Корзина тут специально убрана
 
     return InlineKeyboardMarkup(keyboard)
 
@@ -1352,7 +1352,7 @@ def cart_delete_markup(context):
         ])
 
     keyboard.append([default_button("Назад в корзину", "cart")])
-    keyboard.append([primary_button("📦 Вернуться в каталог", "catalog")])
+    keyboard.append([danger_button("↩️ Вернуться в каталог", "catalog")])
 
     return InlineKeyboardMarkup(keyboard)
 
@@ -2672,8 +2672,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
 
         keyboard = make_two_columns(buttons)
-        keyboard.append([button("Назад в каталог", "catalog")])
-        keyboard.append([primary_button("🛒 Корзина", "cart")])
+        keyboard.append([danger_button("↩️ Назад в каталог", "catalog")])
 
         if not models:
             text_msg = f"Категория: {category[1]}\n\nМоделей пока нет."
@@ -2699,8 +2698,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
 
         keyboard = make_two_columns(buttons)
-        keyboard.append([button("Назад к категориям", f"cat_{category_id}")])
-        keyboard.append([primary_button("📦 Вернуться в каталог", "catalog")])
+        keyboard.append([danger_button("↩️ Назад к категориям", f"cat_{category_id}")])
+        keyboard.append([danger_button("↩️ Вернуться в каталог", "catalog")])
 
         text_msg = f"{model_name}\n\nКатегория: {category_name}\n"
 
@@ -2735,13 +2734,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         products = get_products_by_type(type_id)
 
         buttons = [
-            pbutton(product_name, f"product_{product_id}", emoji_id=emoji_id)
+            button(product_name, f"product_{product_id}")
             for product_id, product_name, product_description, photo_file_id, price, emoji_id in products
         ]
 
         keyboard = make_two_columns(buttons)
-        keyboard.append([button("Назад к модели", f"model_{model_id}")])
-        keyboard.append([primary_button("📦 Вернуться в каталог", "catalog")])
+        keyboard.append([danger_button("↩️ Назад к модели", f"model_{model_id}")])
+        keyboard.append([danger_button("↩️ Вернуться в каталог", "catalog")])
 
         text_msg = (
             f"{type_name}\n\n"
