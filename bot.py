@@ -950,16 +950,15 @@ def catalog_keyboard():
 
     buttons = [
         pbutton(
-            text=f"📁 {name}",
+            text=name,
             callback_data=f"cat_{category_id}",
-            emoji_id=emoji_id,
-            style="primary"
+            emoji_id=emoji_id
         )
         for category_id, name, emoji_id in categories
     ]
 
     keyboard = make_two_columns(buttons)
-    keyboard.append([primary_primary_primary_button("🛒 Корзина", "cart")])
+    keyboard.append([primary_button("🛒 Корзина", "cart")])
 
     return InlineKeyboardMarkup(keyboard)
 
@@ -1163,17 +1162,61 @@ def clear_order_data(context):
     context.user_data["order_state"] = None
 
 
+def parse_price_to_int(price):
+    digits = re.sub(r"\D", "", str(price or ""))
+
+    if not digits:
+        return None
+
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
+def format_money(value):
+    if value is None:
+        return "не указано"
+
+    return f"{value:,}".replace(",", " ")
+
+
+def get_product_qty(context, product_id):
+    return max(1, int(context.user_data.get(f"qty_{product_id}", 1)))
+
+
+def set_product_qty(context, product_id, qty):
+    qty = max(1, min(99, int(qty)))
+    context.user_data[f"qty_{product_id}"] = qty
+    return qty
+
+
 def get_cart(context):
     return context.user_data.setdefault("cart", [])
 
 
-def add_product_to_cart(context, product_id):
+def add_product_to_cart(context, product_id, qty=1):
     cart = get_cart(context)
-    cart.append(product_id)
+
+    for _ in range(max(1, int(qty))):
+        cart.append(product_id)
+
+    context.user_data["cart"] = cart
 
 
 def clear_cart(context):
     context.user_data["cart"] = []
+
+
+def remove_cart_product(context, product_id):
+    cart = get_cart(context)
+    new_cart = [item_id for item_id in cart if item_id != product_id]
+
+    if len(new_cart) == len(cart):
+        return False
+
+    context.user_data["cart"] = new_cart
+    return True
 
 
 def remove_cart_item_by_index(context, index):
@@ -1203,10 +1246,14 @@ def build_cart_lines(context, product_ids=None):
     if product_ids is None:
         product_ids = get_cart(context)
 
+    counter = Counter(product_ids)
     lines = []
     valid_product_ids = []
+    total_sum = 0
+    has_total = False
+    index = 1
 
-    for index, product_id in enumerate(product_ids, start=1):
+    for product_id, qty in counter.items():
         product = get_product(product_id)
 
         if not product:
@@ -1226,39 +1273,223 @@ def build_cart_lines(context, product_ids=None):
             category_name
         ) = product
 
-        valid_product_ids.append(real_product_id)
-        lines.append(f"{index}. #{real_product_id} — {product_name} — {price}")
+        valid_product_ids.extend([real_product_id] * qty)
+
+        price_value = parse_price_to_int(price)
+        if price_value is not None:
+            item_total = price_value * qty
+            total_sum += item_total
+            has_total = True
+            lines.append(
+                f"{index}. #{real_product_id} — {product_name}\n"
+                f"   Количество: {qty} шт.\n"
+                f"   Цена за шт: {price}\n"
+                f"   Общая цена: {format_money(item_total)}"
+            )
+        else:
+            lines.append(
+                f"{index}. #{real_product_id} — {product_name}\n"
+                f"   Количество: {qty} шт.\n"
+                f"   Цена за шт: {price}\n"
+                f"   Общая цена: не посчитана"
+            )
+
+        index += 1
+
+    if has_total:
+        lines.append(f"\nИтого: {format_money(total_sum)}")
 
     return lines, valid_product_ids
 
 
 def cart_markup(context):
     return InlineKeyboardMarkup([
-        [success_button("✅ Оформить заказ", "checkout")],
-        [danger_button("❌ Удалить товар", "cart_delete_menu")],
-        [danger_button("🗑 Очистить корзину", "clear_cart")],
-        [primary_button("📦 Вернуться в каталог", "catalog")],
+        [success_button("Оформить заказ", "checkout")],
+        [danger_button("Удалить товар", "cart_delete_menu")],
+        [danger_button("Очистить корзину", "clear_cart")],
+        [primary_button("Вернуться в каталог", "catalog")],
     ])
 
 
 def cart_delete_markup(context):
     cart = get_cart(context)
+    counter = Counter(cart)
     keyboard = []
 
-    for index, product_id in enumerate(cart):
+    for product_id, qty in counter.items():
         product = get_product(product_id)
 
         if not product:
             continue
 
         keyboard.append([
-            danger_button(f"❌ Удалить #{product[0]} — {product[1]}", f"remove_cart_{index}")
+            danger_button(
+                f"Удалить #{product[0]} — {product[1]} ({qty} шт.)",
+                f"remove_cart_product_{product_id}"
+            )
         ])
 
-    keyboard.append([default_button("↩️ Назад в корзину", "cart")])
-    keyboard.append([primary_button("📦 Вернуться в каталог", "catalog")])
+    keyboard.append([default_button("Назад в корзину", "cart")])
+    keyboard.append([primary_button("Вернуться в каталог", "catalog")])
 
     return InlineKeyboardMarkup(keyboard)
+
+
+async def safe_show_text(query, text, reply_markup=None):
+    try:
+        await query.edit_message_text(
+            text=text,
+            reply_markup=reply_markup
+        )
+    except Exception:
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+        await query.message.chat.send_message(
+            text=text,
+            reply_markup=reply_markup
+        )
+
+
+def build_product_card_caption(product, qty):
+    (
+        product_id,
+        product_name,
+        description,
+        photo_file_id,
+        price,
+        type_id,
+        type_name,
+        model_id,
+        model_name,
+        category_id,
+        category_name
+    ) = product
+
+    price_value = parse_price_to_int(price)
+    total_price = None
+
+    if price_value is not None:
+        total_price = price_value * qty
+
+    caption = (
+        f"{product_name}\n\n"
+        f"ID товара: #{product_id}\n"
+        f"Количество: {qty} шт.\n"
+        f"Цена за шт: {price}\n"
+    )
+
+    if total_price is not None:
+        caption += f"Общая цена: {format_money(total_price)}\n"
+    else:
+        caption += "Общая цена: не посчитана\n"
+
+    if description:
+        caption += f"\nОписание:\n{description}\n"
+
+    return caption
+
+
+def product_card_keyboard(product_id, type_id, qty):
+    return InlineKeyboardMarkup([
+        [
+            default_button("−", f"qty_minus_{product_id}"),
+            default_button(str(qty), f"qty_show_{product_id}"),
+            default_button("+", f"qty_plus_{product_id}"),
+        ],
+        [success_button("Оформить заказ", f"buy_{product_id}")],
+        [primary_button("Добавить в корзину", f"addcart_{product_id}")],
+        [default_button("Вернуться обратно", f"type_{type_id}")],
+        [primary_button("Вернуться в каталог", "catalog")],
+    ])
+
+
+async def update_product_card(query, context, product_id):
+    product = get_product(product_id)
+
+    if not product:
+        await safe_show_text(query, "Товар не найден.")
+        return
+
+    (
+        product_id,
+        product_name,
+        description,
+        photo_file_id,
+        price,
+        type_id,
+        type_name,
+        model_id,
+        model_name,
+        category_id,
+        category_name
+    ) = product
+
+    qty = get_product_qty(context, product_id)
+    caption = build_product_card_caption(product, qty)
+    keyboard = product_card_keyboard(product_id, type_id, qty)
+
+    if photo_file_id:
+        try:
+            await query.edit_message_caption(
+                caption=caption,
+                reply_markup=keyboard
+            )
+            return
+        except Exception:
+            pass
+
+    try:
+        await query.edit_message_text(
+            text=caption,
+            reply_markup=keyboard
+        )
+    except Exception:
+        await safe_show_text(query, caption, keyboard)
+
+
+async def show_product_card(query, product, context=None):
+    (
+        product_id,
+        product_name,
+        description,
+        photo_file_id,
+        price,
+        type_id,
+        type_name,
+        model_id,
+        model_name,
+        category_id,
+        category_name
+    ) = product
+
+    if context:
+        qty = set_product_qty(context, product_id, get_product_qty(context, product_id))
+    else:
+        qty = 1
+
+    caption = build_product_card_caption(product, qty)
+    keyboard = product_card_keyboard(product_id, type_id, qty)
+
+    if photo_file_id:
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+        await query.message.chat.send_photo(
+            photo=photo_file_id,
+            caption=caption,
+            reply_markup=keyboard
+        )
+    else:
+        await safe_show_text(
+            query,
+            caption,
+            keyboard
+        )
 
 
 # =========================
@@ -2393,13 +2624,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         models = get_models_by_category(category_id)
 
         buttons = [
-            pbutton(f"📱 {name}", f"model_{model_id}", emoji_id=emoji_id, style="primary")
+            pbutton(name, f"model_{model_id}", emoji_id=emoji_id)
             for model_id, name, description, emoji_id in models
         ]
 
         keyboard = make_two_columns(buttons)
-        keyboard.append([default_button("↩️ Назад в каталог", "catalog")])
-        keyboard.append([primary_primary_primary_button("🛒 Корзина", "cart")])
+        keyboard.append([button("Назад в каталог", "catalog")])
+        keyboard.append([primary_button("🛒 Корзина", "cart")])
 
         if not models:
             text_msg = f"Категория: {category[1]}\n\nМоделей пока нет."
@@ -2420,13 +2651,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         types = get_types_by_model(model_id)
 
         buttons = [
-            pbutton(f"🔹 {type_name}", f"type_{type_id}", emoji_id=emoji_id, style="primary")
+            pbutton(type_name, f"type_{type_id}", emoji_id=emoji_id)
             for type_id, type_name, type_description, emoji_id in types
         ]
 
         keyboard = make_two_columns(buttons)
-        keyboard.append([default_button("↩️ Назад к категориям", f"cat_{category_id}")])
-        keyboard.append([primary_primary_button("📦 Вернуться в каталог", "catalog")])
+        keyboard.append([button("Назад к категориям", f"cat_{category_id}")])
+        keyboard.append([primary_button("Вернуться в каталог", "catalog")])
 
         text_msg = f"{model_name}\n\nКатегория: {category_name}\n"
 
@@ -2461,13 +2692,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         products = get_products_by_type(type_id)
 
         buttons = [
-            pbutton(f"📦 {product_name}", f"product_{product_id}", emoji_id=emoji_id, style="primary")
+            pbutton(product_name, f"product_{product_id}", emoji_id=emoji_id)
             for product_id, product_name, product_description, photo_file_id, price, emoji_id in products
         ]
 
         keyboard = make_two_columns(buttons)
-        keyboard.append([default_button("↩️ Назад к модели", f"model_{model_id}")])
-        keyboard.append([primary_primary_button("📦 Вернуться в каталог", "catalog")])
+        keyboard.append([button("Назад к модели", f"model_{model_id}")])
+        keyboard.append([primary_button("Вернуться в каталог", "catalog")])
 
         text_msg = (
             f"{type_name}\n\n"
@@ -2493,7 +2724,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_show_text(query, "Товар не найден.", catalog_keyboard())
             return
 
-        await show_product_card(query, product)
+        await show_product_card(query, product, context)
+
+    elif data.startswith("qty_minus_"):
+        product_id = int(data.replace("qty_minus_", ""))
+        current_qty = get_product_qty(context, product_id)
+        set_product_qty(context, product_id, current_qty - 1)
+        await update_product_card(query, context, product_id)
+
+    elif data.startswith("qty_plus_"):
+        product_id = int(data.replace("qty_plus_", ""))
+        current_qty = get_product_qty(context, product_id)
+        set_product_qty(context, product_id, current_qty + 1)
+        await update_product_card(query, context, product_id)
+
+    elif data.startswith("qty_show_"):
+        product_id = int(data.replace("qty_show_", ""))
+        qty = get_product_qty(context, product_id)
+        await query.answer(f"Количество: {qty} шт.")
 
     elif data.startswith("addcart_"):
         product_id = int(data.replace("addcart_", ""))
@@ -2503,18 +2751,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_show_text(query, "Товар не найден.")
             return
 
-        add_product_to_cart(context, product_id)
+        qty = get_product_qty(context, product_id)
+        add_product_to_cart(context, product_id, qty)
+
+        price_value = parse_price_to_int(product[4])
+        total_price = price_value * qty if price_value is not None else None
+
+        text_msg = (
+            "Товар добавлен в корзину ✅\n\n"
+            f"{product[1]}\n"
+            f"Количество: {qty} шт.\n"
+            f"Цена за шт: {product[4]}\n"
+        )
+
+        if total_price is not None:
+            text_msg += f"Общая цена: {format_money(total_price)}"
+        else:
+            text_msg += "Общая цена: не посчитана"
 
         await safe_show_text(
             query,
-            (
-                "Товар добавлен в корзину ✅\n\n"
-                f"{product[1]}\n"
-                f"Цена: {product[4]}"
-            ),
+            text_msg,
             InlineKeyboardMarkup([
-                [primary_primary_primary_button("🛒 Корзина", "cart")],
-                [primary_primary_button("📦 Продолжить покупки", "catalog")],
+                [primary_button("🛒 Корзина", "cart")],
+                [primary_button("Продолжить покупки", "catalog")],
             ])
         )
 
@@ -2526,15 +2786,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_show_text(query, "Товар не найден.")
             return
 
-        set_checkout_items(context, [product_id])
+        qty = get_product_qty(context, product_id)
+        checkout_items = [product_id] * qty
+        set_checkout_items(context, checkout_items)
         context.user_data["checkout_source"] = "single"
         context.user_data["order_state"] = "wait_order_name"
+
+        lines, valid_product_ids = build_cart_lines(context, checkout_items)
 
         await safe_show_text(
             query,
             (
                 "Оформление заказа\n\n"
-                f"Товар:\n# {product[0]} — {product[1]} — {product[4]}\n\n"
+                f"Товар:\n{chr(10).join(lines)}\n\n"
                 "Введите имя и фамилию:"
             )
         )
@@ -2547,7 +2811,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Корзина Netizen\n\nКорзина пока пустая.",
                 InlineKeyboardMarkup([
-                    [primary_primary_button("📦 Вернуться в каталог", "catalog")]
+                    [primary_button("Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -2572,7 +2836,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Корзина Netizen\n\nКорзина пока пустая.",
                 InlineKeyboardMarkup([
-                    [primary_primary_button("📦 Вернуться в каталог", "catalog")]
+                    [primary_button("Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -2589,6 +2853,49 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cart_delete_markup(context)
         )
 
+    elif data.startswith("remove_cart_product_"):
+        try:
+            product_id = int(data.replace("remove_cart_product_", ""))
+        except ValueError:
+            await safe_show_text(query, "Ошибка удаления товара.")
+            return
+
+        removed = remove_cart_product(context, product_id)
+
+        if not removed:
+            await safe_show_text(
+                query,
+                "Товар уже удалён или не найден.",
+                InlineKeyboardMarkup([
+                    [primary_button("Вернуться в каталог", "catalog")]
+                ])
+            )
+            return
+
+        lines, valid_product_ids = build_cart_lines(context)
+
+        if not valid_product_ids:
+            await safe_show_text(
+                query,
+                "Корзина Netizen\n\nКорзина теперь пустая.",
+                InlineKeyboardMarkup([
+                    [primary_button("Вернуться в каталог", "catalog")]
+                ])
+            )
+            return
+
+        text_msg = (
+            "Корзина Netizen\n\n"
+            + "\n".join(lines)
+            + f"\n\nПозиций в корзине: {len(valid_product_ids)}"
+        )
+
+        await safe_show_text(
+            query,
+            text_msg,
+            cart_markup(context)
+        )
+
     elif data.startswith("remove_cart_"):
         try:
             item_index = int(data.replace("remove_cart_", ""))
@@ -2603,7 +2910,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Позиция уже удалена или не найдена.",
                 InlineKeyboardMarkup([
-                    [primary_primary_button("📦 Вернуться в каталог", "catalog")]
+                    [primary_button("Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -2615,7 +2922,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Корзина Netizen\n\nКорзина теперь пустая.",
                 InlineKeyboardMarkup([
-                    [primary_primary_button("📦 Вернуться в каталог", "catalog")]
+                    [primary_button("Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -2639,7 +2946,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query,
             "Корзина очищена ✅",
             InlineKeyboardMarkup([
-                [primary_primary_button("📦 Вернуться в каталог", "catalog")]
+                [primary_button("Вернуться в каталог", "catalog")]
             ])
         )
 
@@ -2651,7 +2958,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Корзина пустая. Сначала добавьте товар.",
                 InlineKeyboardMarkup([
-                    [primary_primary_button("📦 Вернуться в каталог", "catalog")]
+                    [primary_button("Вернуться в каталог", "catalog")]
                 ])
             )
             return
