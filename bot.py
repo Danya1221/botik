@@ -2,6 +2,7 @@ import os
 import random
 import re
 from datetime import datetime
+from collections import Counter
 
 import psycopg
 from telegram import (
@@ -133,6 +134,11 @@ def normalize_ru_phone(raw_phone):
     # +7 8XX XXX XX XX
     # 7 9XX XXX XX XX
     # 7 8XX XXX XX XX
+    # 9XX XXX XX XX
+    # 8XX XXX XX XX
+    if len(digits) == 10 and digits[0] in ["9", "8"]:
+        digits = "8" + digits
+
     if len(digits) == 11 and digits.startswith("7"):
         digits = "8" + digits[1:]
 
@@ -142,7 +148,6 @@ def normalize_ru_phone(raw_phone):
     if not digits.startswith("8"):
         return None
 
-    # После 8 первая цифра кода может быть 9 или 8.
     if digits[1] not in ["9", "8"]:
         return None
 
@@ -868,6 +873,14 @@ reply_menu = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+order_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        ["❌ Отменить оформление"],
+        ["📦 Каталог", "🛒 Корзина"],
+    ],
+    resize_keyboard=True
+)
+
 
 def button(text, callback_data, style=None):
     api_kwargs = {}
@@ -1154,12 +1167,21 @@ def clear_order_data(context):
         "order_phone",
         "order_address",
         "checkout_items",
+        "checkout_source",
     ]
 
     for key in keys:
         context.user_data.pop(key, None)
 
     context.user_data["order_state"] = None
+
+
+async def cancel_order_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, message="Оформление заказа отменено."):
+    clear_order_data(context)
+    await update.message.reply_text(
+        message,
+        reply_markup=reply_menu
+    )
 
 
 def parse_price_to_int(price):
@@ -1304,10 +1326,10 @@ def build_cart_lines(context, product_ids=None):
 
 def cart_markup(context):
     return InlineKeyboardMarkup([
-        [success_button("Оформить заказ", "checkout")],
-        [danger_button("Удалить товар", "cart_delete_menu")],
-        [danger_button("Очистить корзину", "clear_cart")],
-        [primary_button("Вернуться в каталог", "catalog")],
+        [success_button("✅ Оформить заказ", "checkout")],
+        [danger_button("❌ Удалить товар", "cart_delete_menu")],
+        [danger_button("🗑 Очистить корзину", "clear_cart")],
+        [primary_button("📦 Вернуться в каталог", "catalog")],
     ])
 
 
@@ -1330,7 +1352,7 @@ def cart_delete_markup(context):
         ])
 
     keyboard.append([default_button("Назад в корзину", "cart")])
-    keyboard.append([primary_button("Вернуться в каталог", "catalog")])
+    keyboard.append([primary_button("📦 Вернуться в каталог", "catalog")])
 
     return InlineKeyboardMarkup(keyboard)
 
@@ -1399,10 +1421,10 @@ def product_card_keyboard(product_id, type_id, qty):
             default_button(str(qty), f"qty_show_{product_id}"),
             default_button("+", f"qty_plus_{product_id}"),
         ],
-        [success_button("Оформить заказ", f"buy_{product_id}")],
-        [primary_button("Добавить в корзину", f"addcart_{product_id}")],
-        [default_button("Вернуться обратно", f"type_{type_id}")],
-        [primary_button("Вернуться в каталог", "catalog")],
+        [success_button("✅ Оформить заказ", f"buy_{product_id}")],
+        [primary_button("🛒 Добавить в корзину", f"addcart_{product_id}")],
+        [default_button("↩️ Вернуться обратно", f"type_{type_id}")],
+        [primary_button("📦 Вернуться в каталог", "catalog")],
     ])
 
 
@@ -1622,6 +1644,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_state = context.user_data.get("admin_state")
     order_state = context.user_data.get("order_state")
 
+    if order_state and text in ["❌ Отменить оформление", "/cancel", "отмена", "Отмена"]:
+        await cancel_order_flow(update, context)
+        return
+
+    if order_state and text == "📦 Каталог":
+        await cancel_order_flow(update, context, "Оформление заказа отменено. Открываю каталог.")
+        await send_catalog(update, context)
+        return
+
+    if order_state and text == "🛒 Корзина":
+        await cancel_order_flow(update, context, "Оформление заказа отменено. Открываю корзину.")
+        await send_cart_message(update, context)
+        return
+
     # ===== FAST FIX: PRODUCT PRICE AFTER PHOTO =====
     # Этот блок стоит высоко специально, чтобы цена товара точно сохранялась.
     if admin_state == "add_product_price":
@@ -1720,7 +1756,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["order_name"] = text
         context.user_data["order_state"] = "wait_order_phone"
 
-        await update.message.reply_text("Введите номер телефона:")
+        await update.message.reply_text(
+            "Введите номер телефона:",
+            reply_markup=order_menu
+        )
         return
 
     if order_state == "wait_order_phone":
@@ -1734,8 +1773,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "+7 977 777 77 77\n"
                     "или\n"
                     "8 977 777 77 77\n\n"
-                    "Можно писать без пробелов, со скобками или дефисами."
-                )
+                    "Можно писать слитно, без пробелов, со скобками или дефисами.\n"
+                    "Например: 89777777777"
+                ),
+                reply_markup=order_menu
             )
             return
 
@@ -1747,7 +1788,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Введите адрес доставки.\n\n"
                 "Обязательно укажите город.\n"
                 "Пример: г. Москва, ул. Примерная 1"
-            )
+            ),
+            reply_markup=order_menu
         )
         return
 
@@ -1764,7 +1806,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "г. Москва, ул. Примерная 1\n\n"
                     "Или:\n"
                     "Москва, ул. Примерная 1"
-                )
+                ),
+                reply_markup=order_menu
             )
             return
 
@@ -2657,7 +2700,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = make_two_columns(buttons)
         keyboard.append([button("Назад к категориям", f"cat_{category_id}")])
-        keyboard.append([primary_button("Вернуться в каталог", "catalog")])
+        keyboard.append([primary_button("📦 Вернуться в каталог", "catalog")])
 
         text_msg = f"{model_name}\n\nКатегория: {category_name}\n"
 
@@ -2698,7 +2741,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = make_two_columns(buttons)
         keyboard.append([button("Назад к модели", f"model_{model_id}")])
-        keyboard.append([primary_button("Вернуться в каталог", "catalog")])
+        keyboard.append([primary_button("📦 Вернуться в каталог", "catalog")])
 
         text_msg = (
             f"{type_name}\n\n"
@@ -2773,6 +2816,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query,
             text_msg,
             InlineKeyboardMarkup([
+                [success_button("✅ Оформить заказ", "checkout")],
                 [primary_button("🛒 Корзина", "cart")],
                 [primary_button("Продолжить покупки", "catalog")],
             ])
@@ -2800,7 +2844,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Оформление заказа\n\n"
                 f"Товар:\n{chr(10).join(lines)}\n\n"
                 "Введите имя и фамилию:"
-            )
+            ),
+            reply_markup=order_menu
         )
 
     elif data == "cart":
@@ -2811,7 +2856,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Корзина Netizen\n\nКорзина пока пустая.",
                 InlineKeyboardMarkup([
-                    [primary_button("Вернуться в каталог", "catalog")]
+                    [primary_button("📦 Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -2836,7 +2881,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Корзина Netizen\n\nКорзина пока пустая.",
                 InlineKeyboardMarkup([
-                    [primary_button("Вернуться в каталог", "catalog")]
+                    [primary_button("📦 Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -2867,7 +2912,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Товар уже удалён или не найден.",
                 InlineKeyboardMarkup([
-                    [primary_button("Вернуться в каталог", "catalog")]
+                    [primary_button("📦 Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -2879,7 +2924,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Корзина Netizen\n\nКорзина теперь пустая.",
                 InlineKeyboardMarkup([
-                    [primary_button("Вернуться в каталог", "catalog")]
+                    [primary_button("📦 Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -2910,7 +2955,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Позиция уже удалена или не найдена.",
                 InlineKeyboardMarkup([
-                    [primary_button("Вернуться в каталог", "catalog")]
+                    [primary_button("📦 Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -2922,7 +2967,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Корзина Netizen\n\nКорзина теперь пустая.",
                 InlineKeyboardMarkup([
-                    [primary_button("Вернуться в каталог", "catalog")]
+                    [primary_button("📦 Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -2946,7 +2991,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query,
             "Корзина очищена ✅",
             InlineKeyboardMarkup([
-                [primary_button("Вернуться в каталог", "catalog")]
+                [primary_button("📦 Вернуться в каталог", "catalog")]
             ])
         )
 
@@ -2958,7 +3003,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "Корзина пустая. Сначала добавьте товар.",
                 InlineKeyboardMarkup([
-                    [primary_button("Вернуться в каталог", "catalog")]
+                    [primary_button("📦 Вернуться в каталог", "catalog")]
                 ])
             )
             return
@@ -2973,7 +3018,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Оформление заказа\n\n"
                 f"Товары:\n{chr(10).join(lines)}\n\n"
                 "Введите имя и фамилию:"
-            )
+            ),
+            reply_markup=order_menu
         )
 
     # ===== ADMIN ADD =====
