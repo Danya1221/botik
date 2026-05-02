@@ -739,6 +739,27 @@ def add_admin_to_db(telegram_id, username, full_name):
             """, (telegram_id, username, full_name))
 
 
+def get_admins_list():
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT telegram_id, username, full_name, role, created_at
+                FROM admins
+                ORDER BY created_at DESC;
+            """)
+            return cur.fetchall()
+
+
+def delete_admin_from_db(telegram_id):
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM admins
+                WHERE telegram_id = %s;
+            """, (telegram_id,))
+            return cur.rowcount
+
+
 def save_admin_login_attempt(telegram_id, username, full_name, login, success):
     with db_connect() as conn:
         with conn.cursor() as cur:
@@ -760,6 +781,26 @@ def is_admin_user(user_id):
 
 def is_admin_logged(context):
     return context.user_data.get("admin_logged") is True
+
+
+def is_main_admin(user_id):
+    main_admin_id = get_admin_id()
+    return bool(main_admin_id and user_id == main_admin_id)
+
+
+async def try_delete_message(context, chat_id, message_id):
+    if not chat_id or not message_id:
+        return
+
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+
+async def delete_saved_prompt(context, chat_id, key):
+    message_id = context.user_data.pop(key, None)
+    await try_delete_message(context, chat_id, message_id)
 
 
 # =========================
@@ -855,6 +896,9 @@ def admin_keyboard():
         [button("📱 Редактор моделей", "admin_edit_models")],
         [button("📂 Редактор видов товара", "admin_edit_types")],
         [button("📦 Редактор товаров", "admin_products")],
+        [button("👥 Добавить админа", "admin_add_admin")],
+        [button("📋 Список админов", "admin_list_admins")],
+        [button("❌ Удалить админа", "admin_delete_admin")],
         [button("🚪 Выйти из админ-панели", "admin_logout")],
     ])
 
@@ -1015,6 +1059,8 @@ def clear_admin_temp_data(context):
         "edit_type_id",
         "edit_product_id",
         "admin_login_input",
+        "new_admin_id_input",
+        "delete_admin_id_input",
     ]
 
     for key in keys_to_clear:
@@ -1029,6 +1075,7 @@ def clear_order_data(context):
         "order_name",
         "order_phone",
         "order_address",
+        "checkout_items",
     ]
 
     for key in keys:
@@ -1050,12 +1097,26 @@ def clear_cart(context):
     context.user_data["cart"] = []
 
 
-def build_cart_lines(context):
-    cart = get_cart(context)
+def set_checkout_items(context, product_ids):
+    context.user_data["checkout_items"] = list(product_ids)
+
+
+def get_checkout_items(context):
+    return context.user_data.get("checkout_items") or []
+
+
+def clear_checkout_items(context):
+    context.user_data.pop("checkout_items", None)
+
+
+def build_cart_lines(context, product_ids=None):
+    if product_ids is None:
+        product_ids = get_cart(context)
+
     lines = []
     valid_product_ids = []
 
-    for index, product_id in enumerate(cart, start=1):
+    for index, product_id in enumerate(product_ids, start=1):
         product = get_product(product_id)
 
         if not product:
@@ -1216,9 +1277,11 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["admin_state"] = "wait_login"
     context.user_data["admin_logged"] = False
 
-    await update.message.reply_text(
+    message = await update.message.reply_text(
         "🔐 Вход в админ-панель Netizen\n\nВведите логин:"
     )
+
+    context.user_data["admin_login_prompt_id"] = message.message_id
 
 
 async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1422,13 +1485,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        lines, valid_product_ids = build_cart_lines(context)
+        checkout_items = get_checkout_items(context)
+        lines, valid_product_ids = build_cart_lines(context, checkout_items)
 
         if not valid_product_ids:
             clear_order_data(context)
-            clear_cart(context)
             await update.message.reply_text(
-                "Корзина пустая. Заказ отменён.",
+                "Нет товаров для оформления. Заказ отменён.",
                 reply_markup=reply_menu
             )
             return
@@ -1482,8 +1545,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        checkout_source = context.user_data.get("checkout_source")
+
+        if checkout_source == "cart":
+            clear_cart(context)
+
         clear_order_data(context)
-        clear_cart(context)
 
         await update.message.reply_text(
             "Заказ оформлен ✅\n\nМенеджер скоро свяжется с вами.",
@@ -1494,36 +1561,151 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ===== ADMIN LOGIN =====
 
     if admin_state == "wait_login":
+        await try_delete_message(context, update.effective_chat.id, update.message.message_id)
+        await delete_saved_prompt(context, update.effective_chat.id, "admin_login_prompt_id")
+
         context.user_data["admin_login_input"] = text
 
         if text == get_admin_login():
             context.user_data["admin_state"] = "wait_password"
-            await update.message.reply_text("Теперь введите пароль:")
+            message = await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Теперь введите пароль:"
+            )
+            context.user_data["admin_password_prompt_id"] = message.message_id
         else:
             context.user_data["admin_state"] = None
             save_admin_login_attempt(user_id, username, full_name, text, False)
-            await update.message.reply_text("Неверный логин.")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Неверный логин."
+            )
         return
 
     if admin_state == "wait_password":
+        await try_delete_message(context, update.effective_chat.id, update.message.message_id)
+        await delete_saved_prompt(context, update.effective_chat.id, "admin_password_prompt_id")
+
         login = context.user_data.get("admin_login_input", "")
 
         if text == get_admin_password():
+            if not is_main_admin(user_id) and not is_admin_in_db(user_id):
+                context.user_data["admin_logged"] = False
+                context.user_data["admin_state"] = None
+                save_admin_login_attempt(user_id, username, full_name, login, False)
+
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=(
+                        "Доступ запрещён.\n\n"
+                        "Логин и пароль верные, но ваш Telegram ID не добавлен в список админов."
+                    )
+                )
+                return
+
             context.user_data["admin_logged"] = True
             context.user_data["admin_state"] = None
 
-            add_admin_to_db(user_id, username, full_name)
+            if is_main_admin(user_id):
+                add_admin_to_db(user_id, username, full_name)
+
             save_admin_login_attempt(user_id, username, full_name, login, True)
 
-            await update.message.reply_text(
-                "Вход выполнен ✅\n\n" + ADMIN_PANEL_TEXT,
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Вход выполнен ✅\n\n" + ADMIN_PANEL_TEXT,
                 reply_markup=admin_keyboard()
             )
         else:
             context.user_data["admin_logged"] = False
             context.user_data["admin_state"] = None
             save_admin_login_attempt(user_id, username, full_name, login, False)
-            await update.message.reply_text("Неверный пароль.")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Неверный пароль."
+            )
+        return
+
+    # ===== ADD ADMIN =====
+
+    if admin_state == "add_admin_id":
+        if not is_main_admin(user_id) or not is_admin_logged(context):
+            await update.message.reply_text("Нет доступа.")
+            return
+
+        raw_admin_id = text.strip()
+
+        try:
+            new_admin_id = int(raw_admin_id)
+        except ValueError:
+            await update.message.reply_text(
+                "Telegram ID должен быть числом.\n\nНапример: 707131428",
+                reply_markup=cancel_admin_keyboard()
+            )
+            return
+
+        add_admin_to_db(
+            telegram_id=new_admin_id,
+            username=None,
+            full_name="Добавлен владельцем"
+        )
+
+        clear_admin_temp_data(context)
+
+        await update.message.reply_text(
+            (
+                "Админ добавлен ✅\n\n"
+                f"Telegram ID: {new_admin_id}\n\n"
+                "Теперь этот сотрудник сможет войти через /admin по логину и паролю."
+            ),
+            reply_markup=admin_keyboard()
+        )
+        return
+
+    if admin_state == "delete_admin_id":
+        if not is_main_admin(user_id) or not is_admin_logged(context):
+            await update.message.reply_text("Нет доступа.")
+            return
+
+        raw_admin_id = text.strip()
+
+        try:
+            admin_id_to_delete = int(raw_admin_id)
+        except ValueError:
+            await update.message.reply_text(
+                "Telegram ID должен быть числом.\n\nНапример: 707131428",
+                reply_markup=cancel_admin_keyboard()
+            )
+            return
+
+        if admin_id_to_delete == get_admin_id():
+            await update.message.reply_text(
+                "Основного админа удалить нельзя.",
+                reply_markup=admin_keyboard()
+            )
+            clear_admin_temp_data(context)
+            return
+
+        deleted_count = delete_admin_from_db(admin_id_to_delete)
+        clear_admin_temp_data(context)
+
+        if deleted_count:
+            await update.message.reply_text(
+                (
+                    "Админ удалён ✅\n\n"
+                    f"Telegram ID: {admin_id_to_delete}\n\n"
+                    "Теперь этот пользователь не сможет войти в админку."
+                ),
+                reply_markup=admin_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                (
+                    "Админ не найден.\n\n"
+                    f"Telegram ID: {admin_id_to_delete}"
+                ),
+                reply_markup=admin_keyboard()
+            )
         return
 
     # ===== CATEGORY =====
@@ -2152,6 +2334,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = make_two_columns(buttons)
         keyboard.append([button("Назад в каталог", "catalog")])
+        keyboard.append([button("🛒 Корзина", "cart")])
 
         if not models:
             text_msg = f"Категория: {category[1]}\n\nМоделей пока нет."
@@ -2278,24 +2461,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_show_text(query, "Товар не найден.")
             return
 
-        clear_cart(context)
-        add_product_to_cart(context, product_id)
-
-        lines, valid_product_ids = build_cart_lines(context)
-        text_msg = (
-            "Корзина Netizen\n\n"
-            + "\n".join(lines)
-            + "\n\nНажмите «Оформить заказ», чтобы продолжить."
-        )
+        set_checkout_items(context, [product_id])
+        context.user_data["checkout_source"] = "single"
+        context.user_data["order_state"] = "wait_order_name"
 
         await safe_show_text(
             query,
-            text_msg,
-            InlineKeyboardMarkup([
-                [button("Оформить заказ", "checkout")],
-                [button("Очистить корзину", "clear_cart")],
-                [button("Вернуться в каталог", "catalog")],
-            ])
+            (
+                "Оформление заказа\n\n"
+                f"Товар:\n# {product[0]} — {product[1]} — {product[4]}\n\n"
+                "Введите имя и фамилию:"
+            )
         )
 
     elif data == "cart":
@@ -2351,6 +2527,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        set_checkout_items(context, valid_product_ids)
+        context.user_data["checkout_source"] = "cart"
         context.user_data["order_state"] = "wait_order_name"
 
         await safe_show_text(
@@ -2489,6 +2667,106 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "iPhone 17 256GB e-Sim Blue\n\n"
                 "Можно отправить premium emoji + текст."
             ),
+            cancel_admin_keyboard()
+        )
+
+    elif data == "admin_add_admin":
+        if not is_main_admin(query.from_user.id) or not is_admin_logged(context):
+            await safe_show_text(
+                query,
+                "Нет доступа. Добавлять админов может только основной админ.",
+                admin_keyboard()
+            )
+            return
+
+        context.user_data["admin_state"] = "add_admin_id"
+
+        await safe_show_text(
+            query,
+            (
+                "👥 Добавление админа\n\n"
+                "Отправьте Telegram ID сотрудника.\n\n"
+                "Например:\n"
+                "707131428"
+            ),
+            cancel_admin_keyboard()
+        )
+
+    elif data == "admin_list_admins":
+        if not is_main_admin(query.from_user.id) or not is_admin_logged(context):
+            await safe_show_text(
+                query,
+                "Нет доступа. Смотреть список админов может только основной админ.",
+                admin_keyboard()
+            )
+            return
+
+        admins = get_admins_list()
+        main_admin_id = get_admin_id()
+
+        lines = [
+            "📋 Список админов Netizen\n",
+            f"Основной админ: {main_admin_id}\n"
+        ]
+
+        if not admins:
+            lines.append("Дополнительных админов пока нет.")
+        else:
+            for index, admin in enumerate(admins, start=1):
+                telegram_id, username, full_name, role, created_at = admin
+                username_text = username or "username не указан"
+                full_name_text = full_name or "имя не указано"
+                lines.append(
+                    f"{index}. ID: {telegram_id}\n"
+                    f"   Username: {username_text}\n"
+                    f"   Имя: {full_name_text}\n"
+                    f"   Роль: {role}\n"
+                )
+
+        await safe_show_text(
+            query,
+            "\n".join(lines),
+            admin_keyboard()
+        )
+
+    elif data == "admin_delete_admin":
+        if not is_main_admin(query.from_user.id) or not is_admin_logged(context):
+            await safe_show_text(
+                query,
+                "Нет доступа. Удалять админов может только основной админ.",
+                admin_keyboard()
+            )
+            return
+
+        admins = get_admins_list()
+
+        if not admins:
+            await safe_show_text(
+                query,
+                "Дополнительных админов пока нет.",
+                admin_keyboard()
+            )
+            return
+
+        lines = ["❌ Удаление админа\n", "Список админов:\n"]
+
+        for index, admin in enumerate(admins, start=1):
+            telegram_id, username, full_name, role, created_at = admin
+            username_text = username or "username не указан"
+            full_name_text = full_name or "имя не указано"
+            lines.append(
+                f"{index}. ID: {telegram_id}\n"
+                f"   Username: {username_text}\n"
+                f"   Имя: {full_name_text}\n"
+            )
+
+        lines.append("\nОтправьте Telegram ID админа, которого нужно удалить:")
+
+        context.user_data["admin_state"] = "delete_admin_id"
+
+        await safe_show_text(
+            query,
+            "\n".join(lines),
             cancel_admin_keyboard()
         )
 
@@ -2876,6 +3154,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_show_text(query, "Нет доступа.")
             return
 
+        await delete_saved_prompt(context, query.message.chat_id, "admin_login_prompt_id")
+        await delete_saved_prompt(context, query.message.chat_id, "admin_password_prompt_id")
         clear_admin_temp_data(context)
         await safe_show_text(query, ADMIN_PANEL_TEXT, admin_keyboard())
 
