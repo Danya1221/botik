@@ -73,10 +73,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if description:
             text_msg += f"\nОписание:\n{description}\n"
 
-if not types:
-    text_msg += "\nПока нет вариантов."
-else:
-    text_msg += ""
+        if not types:
+            text_msg += "\nПока нет вариантов."
 
         await safe_show_text(query, text_msg, InlineKeyboardMarkup(keyboard))
 
